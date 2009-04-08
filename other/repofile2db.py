@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+import sys
+import os
 import sqlite3
 import tarfile
 import re
@@ -23,9 +25,9 @@ def parse_pkg_filename(name):
   else:
     return (matchdata.group(1), matchdata.group(2), int(matchdata.group(3)))
 
-def read_filelist(reponame, filename, file, database):
+def read_filelist(reponame, filename, fileobj, database):
   """Read a list of files, inserting them into the DB."""
-  file.readline() # Get rid of that %FILES% at the top of the file.
+  fileobj.readline() # Get rid of that %FILES% at the top of the file.
   filename = os.path.split(filename)[0]
   (pkgname, pkgver, pkgrel) = parse_pkg_filename(filename)
 
@@ -71,7 +73,7 @@ if len(sys.argv) != 3:
   print >>sys.stderr, 'Usage: %s <DATABASE> <TARBALL>' % (sys.argv[0],)
   sys.exit(1)
 
-tarpath = sys.argv[1]
+tarpath = sys.argv[2]
 reponame =  re.match('^([^.]+).files.tar.gz', os.path.split(tarpath)[-1])
 if reponame == None:
   print >>sys.stderr, 'Error: the name of the tarball should have the form REPONAME.files.tar.gz.'
@@ -79,6 +81,6 @@ if reponame == None:
 reponame = reponame.group(1)
 tarball = tarfile.open(tarname)
 db = sqlite3.connect(sys.argv[1])
-read_repodata(reponame, tarball, database)
-database.close()
+read_repodata(reponame, tarball, db)
+db.close()
 tarball.close()
