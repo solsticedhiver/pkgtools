@@ -140,6 +140,29 @@ usage () {
 }
 # }}}
 
+# create_db {{{
+create_db() {
+    local repo=$1
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Creating database for [$repo] ..."
+    fi
+    cd_filelist_dir
+    $SQL $repo.db "create table files (key INTEGER PRIMARY KEY, pkgname TEXT, file TEXT);"
+    for pkg in $(ls ${repo}.tmp); do
+        p=$(echo $pkg | sed "s/\(.*\)-[0-9][0-9,a-z,A-Z,\.]*-[0-9]*/\1/g")
+        for f in $(cat ${repo}.tmp/$pkg/files); do
+	    if [ "$f" == "%FILES%" ]; then
+                continue
+	    else
+                if ! (echo $f | grep ".*/$" > /dev/null); then
+                    $SQL $repo.db "insert into files (pkgname, file) values ('$p','$f');" ;
+                fi
+	    fi
+	done
+    done
+}
+# }}}
+
 # update() -- update the package file list {{{
 update () {
         for repo in ${REPOS[@]}; do
@@ -161,6 +184,8 @@ update () {
                 mkdir -p "$repo.tmp" || (warn "Could not create directory for %s\n" $repo; continue)
                 tar ozxf "$repofile" -C "$repo.tmp" 2> /dev/null || (warn "Unable to extract %s\n" $repofile; continue)
                 rm -rf "$repo"
+                rm -rf "$repo.db"
+                create_db $repo
                 mv "$repo.tmp" "$repo"
                 rm -f "$repofile"
                 msg "Done\n"
