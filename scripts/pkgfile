@@ -167,15 +167,15 @@ update_db() {
                             msg "Updating filelist for %s-%s...\n" "$pkgname" "$pkgver"
                         fi
                         $SQL $repo.db "delete from files where pkgname='$pkgname';"
-                        while read file < $repo.tmp/$pkg/files; do
+                        ( while read file ; do
                             if [ "$file" == "%FILES%" ]; then
                                     continue
                             else
                                     if ! (echo $file | grep -q '/$'); then
-                                            $SQL $repo.db "insert into files (pkgname, file) values ('$pkgname','$f');" ;
+                                            $SQL $repo.db "insert into files (pkgname, file) values ('$pkgname','$file');" ;
                                     fi
                             fi
-                        done
+                        done ) < $pkg/files
                         $SQL $VERSIONDB "delete from pkgs where pkgname='$pkgname';"
                         $SQL $VERSIONDB "insert into pkgs (pkgname, pkgver, repo) values ('$pkgname','$pkgver', '$repo');"
                 fi
