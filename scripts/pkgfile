@@ -142,44 +142,44 @@ usage () {
 # }}}
 
 create_version_db() {
-    cd_filelist_dir
-    if [ ! -f $VERSIONDB ]; then
-        $SQL $VERSIONDB "create table pkgs (key INTEGER PRIMARY KEY, pkgname TEXT, pkgver TEXT, repo TEXT);"
-    fi
+        cd_filelist_dir
+        if [ ! -f $VERSIONDB ]; then
+            $SQL $VERSIONDB "create table pkgs (key INTEGER PRIMARY KEY, pkgname TEXT, pkgver TEXT, repo TEXT);"
+        fi
 }
 
 # update_db {{{
 update_db() {
-    local repo=$1
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Updating database for [$repo] ..."
-    fi
-    cd_filelist_dir
-    if [ ! -f $repo.db ]; then
-        $SQL $repo.db "create table files (key INTEGER PRIMARY KEY, pkgname TEXT, file TEXT);"
-    fi
-    for pkg in $(ls ${repo}.tmp); do
-        p=$(echo $pkg | sed "s/\(.*\)-[0-9][0-9,a-z,A-Z,\.]*-[0-9]*/\1/g")
-        v=$(echo $pkg | sed "s/.*-\([0-9].*-[0-9]*\)/\1/g")
-        version=$($SQL $VERSIONDB "select pkgver from pkgs where pkgname='$p';")
-        if [[ -z "$version" || "$version" != "$v" ]]; then
-        $SQL $repo.db "delete from files where pkgname='$p';"
+        local repo=$1
         if [ "$VERBOSE" -eq 1 ]; then
-                msg "Updating filelist for %s-%s...\n" "$p" "$v"
+            echo "Updating database for [$repo] ..."
         fi
-        for f in $(cat ${repo}.tmp/$pkg/files); do
-	    if [ "$f" == "%FILES%" ]; then
-                continue
-	    else
-                if ! (echo $f | grep ".*/$" > /dev/null); then
-                    $SQL $repo.db "insert into files (pkgname, file) values ('$p','$f');" ;
+        cd_filelist_dir
+        if [ ! -f $repo.db ]; then
+            $SQL $repo.db "create table files (key INTEGER PRIMARY KEY, pkgname TEXT, file TEXT);"
+        fi
+        for pkg in $repo.tmp/*; do
+                pkgname=$(get_pkgname_from_string $pkg)
+                pkgver=$( get_pkgver_from_string  $pkg)
+                db_pkgver=$($SQL $VERSIONDB "select pkgver from pkgs where pkgname='$pkgname';")
+                if [[ "$db_pkgver" != "$pkgver" ]]; then
+                        if [ "$VERBOSE" -eq 1 ]; then
+                            msg "Updating filelist for %s-%s...\n" "$pkgname" "$pkgver"
+                        fi
+                        $SQL $repo.db "delete from files where pkgname='$pkgname';"
+                        while read file < $repo.tmp/$pkg/files; do
+                            if [ "$file" == "%FILES%" ]; then
+                                    continue
+                            else
+                                    if ! (echo $file | grep -q '/$'); then
+                                            $SQL $repo.db "insert into files (pkgname, file) values ('$pkgname','$f');" ;
+                                    fi
+                            fi
+                        done
+                        $SQL $VERSIONDB "delete from pkgs where pkgname='$pkgname';"
+                        $SQL $VERSIONDB "insert into pkgs (pkgname, pkgver, repo) values ('$pkgname','$pkgver', '$repo');"
                 fi
-	    fi
-	done
-        $SQL $VERSIONDB "delete from pkgs where pkgname='$p';"
-        $SQL $VERSIONDB "insert into pkgs (pkgname, pkgver, repo) values ('$p','$v', '$repo');"
-        fi
-    done
+        done
 }
 # }}}
 
@@ -428,4 +428,4 @@ for action in "${ACTIONS[@]}"; do
 done
 
 quit 0
-# vim: set ts=8 fdm=marker et :
+# vim: set ts=8 sw=8 fdm=marker et :
