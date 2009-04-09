@@ -29,6 +29,7 @@ CONFIG_DIR='/etc/pkgtools/'
 FILELIST_DIR="/var/cache/pkgtools/lists"
 RATELIMIT='100k' # Argument to wget's --limit-rate flag
 PACMAN_MIRRORLIST='/etc/pacman.d/mirrorlist'
+VERSIONDB=versions.db
 
 if [ -r "$PKGTOOLS_DIR/functions" ]; then
         source "$PKGTOOLS_DIR/functions"
@@ -140,16 +141,32 @@ usage () {
 }
 # }}}
 
-# create_db {{{
-create_db() {
+create_version_db() {
+    cd_filelist_dir
+    if [ ! -f $VERSIONDB ]; then
+        $SQL $VERSIONDB "create table pkgs (key INTEGER PRIMARY KEY, pkgname TEXT, pkgver TEXT, repo TEXT);"
+    fi
+}
+
+# update_db {{{
+update_db() {
     local repo=$1
     if [ "$VERBOSE" -eq 1 ]; then
-        echo "Creating database for [$repo] ..."
+        echo "Updating database for [$repo] ..."
     fi
     cd_filelist_dir
-    $SQL $repo.db "create table files (key INTEGER PRIMARY KEY, pkgname TEXT, file TEXT);"
+    if [ ! -f $repo.db ]; then
+        $SQL $repo.db "create table files (key INTEGER PRIMARY KEY, pkgname TEXT, file TEXT);"
+    fi
     for pkg in $(ls ${repo}.tmp); do
         p=$(echo $pkg | sed "s/\(.*\)-[0-9][0-9,a-z,A-Z,\.]*-[0-9]*/\1/g")
+        v=$(echo $pkg | sed "s/.*-\([0-9].*-[0-9]*\)/\1/g")
+        version=$($SQL $VERSIONDB "select pkgver from pkgs where pkgname='$p';")
+        if [[ -z "$version" || "$version" != "$v" ]]; then
+        $SQL $repo.db "delete from files where pkgname='$p';"
+        if [ "$VERBOSE" -eq 1 ]; then
+                msg "Updating filelist for %s-%s...\n" "$p" "$v"
+        fi
         for f in $(cat ${repo}.tmp/$pkg/files); do
 	    if [ "$f" == "%FILES%" ]; then
                 continue
@@ -159,6 +176,9 @@ create_db() {
                 fi
 	    fi
 	done
+        $SQL $VERSIONDB "delete from pkgs where pkgname='$p';"
+        $SQL $VERSIONDB "insert into pkgs (pkgname, pkgver, repo) values ('$p','$v', '$repo');"
+        fi
     done
 }
 # }}}
@@ -175,6 +195,7 @@ update () {
                 cd_filelist_dir
 
                 rm -f "$repofile"
+                create_version_db
                 if [ "$VERBOSE" -eq 1 ]; then
                         msg "Using mirror %s... " $mirror
                 fi
@@ -184,8 +205,7 @@ update () {
                 mkdir -p "$repo.tmp" || (warn "Could not create directory for %s\n" $repo; continue)
                 tar ozxf "$repofile" -C "$repo.tmp" 2> /dev/null || (warn "Unable to extract %s\n" $repofile; continue)
                 rm -rf "$repo"
-                rm -rf "$repo.db"
-                create_db $repo
+                update_db $repo
                 mv "$repo.tmp" "$repo"
                 rm -f "$repofile"
                 msg "Done\n"
