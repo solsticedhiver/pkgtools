@@ -22,4 +22,26 @@ msg  () {
         printf "$message" $@
 }
 
+# Expects pkgname-pkgver-pkgrel string and returns pkgname
+get_pkgname_from_string () {
+        local pkgstring=$1
+        pkgname=$(echo $pkgstring | sed 's/-[^-]+-[0-9.]+$//')
+        if [ -n "$pkgname" ]; then
+                echo $pkgname
+                return 0
+        fi
+        return 1
+}
+
+# Expects pkgname-pkgver-pkgrel string and returns pkgver-pkgrel
+get_pkgver_from_string () {
+        local pkgstring=$1
+        pkgver=$(echo $pkgstring | sed 's/.*\(-[^-]+-[0-9.]+\)$/\1/')
+        if [ -n "$pkgver" ]; then
+                echo $pkgver
+                return 0
+        fi
+        return 1
+}
+
 # vim: set ts=8 et:
