@@ -13,7 +13,7 @@ def dbexec(database, statement, bindings):
 
 name_regex = '^(.+)'
 ver_regex = '-([^-]+)'
-rel_regex = '-([0-9]+)$'
+rel_regex = '-([^-]+)$'
 pkg_filename_regex = re.compile(name_regex + ver_regex + rel_regex)
 
 def parse_pkg_filename(name):
@@ -23,13 +23,22 @@ def parse_pkg_filename(name):
   if matchdata == None:
     return None
   else:
-    return (matchdata.group(1), matchdata.group(2), int(matchdata.group(3)))
+    return (matchdata.group(1), matchdata.group(2), float(matchdata.group(3)))
 
 def read_filelist(reponame, filename, fileobj, database):
   """Read a list of files, inserting them into the DB."""
   fileobj.readline() # Get rid of that %FILES% at the top of the file.
-  filename = os.path.split(filename)[0]
-  (pkgname, pkgver, pkgrel) = parse_pkg_filename(filename)
+  # filename looks like repo/pkgname-pkgver-pkgrel/files
+  try:
+    filename = os.path.normpath(filename).split(os.path.sep)[-2]
+  except IndexError:
+    print >>sys.stderr, 'Ignoring file with malformed name %s.' % (filename,)
+    return
+  parsed_name = parse_pkg_filename(filename)
+  if parsed_name == None:
+    print >>sys.stderr, 'Ignoring file with malformed name %s.' % (filename,)
+    return
+  (pkgname, pkgver, pkgrel) = parsed_name
 
   cursor = database.execute(
     'SELECT version, release FROM versioned_packages WHERE reponame = ? AND packagename = ?', (pkgname, pkgver))
@@ -39,7 +48,7 @@ def read_filelist(reponame, filename, fileobj, database):
     return # No work to do.
 
   try:
-    dbexec('INSERT INTO packages VALUES (?)', (pkgname,))
+    dbexec(database, 'INSERT INTO packages VALUES (?)', (pkgname,))
   except sqlite3.IntegrityError:
     pass # Try to add pkgname to packages, keep going if it's already there.
   dbexec(database,
@@ -79,7 +88,7 @@ if reponame == None:
   print >>sys.stderr, 'Error: the name of the tarball should have the form REPONAME.files.tar.gz.'
   sys.exit(1)
 reponame = reponame.group(1)
-tarball = tarfile.open(tarname)
+tarball = tarfile.open(tarpath)
 db = sqlite3.connect(sys.argv[1])
 read_repodata(reponame, tarball, db)
 db.close()
