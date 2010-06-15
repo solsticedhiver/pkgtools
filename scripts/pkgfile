@@ -59,19 +59,21 @@ umask 0022 # This will ensure that any files we create are readable by normal us
 
 # cd_filelist_dir() {{{
 cd_filelist_dir () {
-        [[ 'noempty' != "$1" ]] && check_filelist_dir
-
+        check_filelist_dir
         cd "$FILELIST_DIR" || die 1 "Unable to change directory to %s\n" $FILELIST_DIR
-        if [[ $1 == 'noempty' ]]; then
-                # */* expanded is really ugly
-                (( DEBUG >= 2 )) && set +x
-                # TODO: De-uglify
-                if echo */* | grep -q '^\*/\*$'; then
-                    unlock || warn "Failed to unlock %s" "$LOCKFILE"
-                    die 1 "%s appears to be empty! Did you run %s --update?\n" "$FILELIST_DIR" "$PROGNAME"
-                fi
-        fi
-        (( DEBUG >= 2 )) && set -x
+}
+# }}}
+
+# check_filelist_dir_contents() -- Make sure that there are repos in $FILELIST_DIR {{{
+check_filelist_dir_contents() {
+    # */* expanded is really ugly
+    (( DEBUG >= 2 )) && set +x
+    # TODO: De-uglify
+    if echo */* | grep -q '^\*/\*$'; then
+        unlock || warn "Failed to unlock %s" "$LOCKFILE"
+        die 1 "%s appears to be empty! Did you run %s --update?\n" "$FILELIST_DIR" "$PROGNAME"
+    fi
+    (( DEBUG >= 2 )) && set -x
 }
 # }}}
 
@@ -248,7 +250,7 @@ search () {
                 fi
         fi
 
-        cd_filelist_dir noempty
+        cd_filelist_dir && check_filelist_dir_contents
 
         if (( ! VERBOSE )); then
                 local sedstring='s#-[0-9.A-Za-z_]*-[0-9.]*/files:.*##'
