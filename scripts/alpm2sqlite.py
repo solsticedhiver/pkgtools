@@ -24,7 +24,7 @@
 from sys import argv, stderr, exit
 from os import listdir
 from os.path import join, exists, isdir, isfile, basename, dirname
-from tarfile import open as tfopen
+from tarfile import open as tfopen, TarError
 
 from cPickle import loads, dumps
 from zlib import decompress, compress
@@ -167,13 +167,13 @@ def open_db(dbfile):
 
     return (conn, cur)
 
-def insert_pkg(pkg, cur):
-    cur.execute('select rowid from pkg where name=?', (pkg['name'],))
-    row = cur.fetchone()
+def commit_pkg(pkg, conn, cur):
+    row = cur.execute('select rowid from pkg where name=?', (pkg['name'],)).fetchone()
     if row is not None:
         cur.execute('update pkg set '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' where name=:name', pkg)
     else:
         cur.execute('insert into pkg ('+','.join(p for p in pkg)+') values('+ ','.join(':%s' % p for p in pkg)+')', pkg)
+    conn.commit()
 
 def convert_tarball(tf, conn, cur):
     # Do not try to create a complete pkg object
@@ -191,8 +191,7 @@ def convert_tarball(tf, conn, cur):
             parse_fctn[fname](pkg, f)
             f.close()
 
-            insert_pkg(pkg, cur)
-            conn.commit()
+            commit_pkg(pkg, conn, cur)
 
 def convert_dir(path, conn, cur):
     for pkgdir in sorted(listdir(path)):
@@ -205,8 +204,7 @@ def convert_dir(path, conn, cur):
                 with open(pathfile) as f:
                     parse_fctn[fname](pkg, f)
 
-        insert_pkg(pkg, cur)
-        conn.commit()
+        commit_pkg(pkg, conn, cur)
 
 def update_repo_from_dir(path, dbfile, options):
     '''update sqlite db from a directory'''
@@ -218,12 +216,19 @@ def update_repo_from_dir(path, dbfile, options):
         pkgname = '-'.join(pkgdir.split('-')[:-2])
         pkgver = '-'.join(pkgdir.split('-')[-2:])
 
-        pkg = cur.execute('select version from pkg where name=?', (pkgname,)).fetchone()
-        update = True
-        if pkg and pkg[0] == pkgver:
-            update = False
-        # If the pkg has changed, update it
-        if update:
+        oldpkg = cur.execute('select version from pkg where name=?', (pkgname,)).fetchone()
+        # If not in the db or a different version, include or update it
+        update = 0
+        if not oldpkg:
+            update = 1
+        elif oldpkg['version'] != pkgver:
+            update = 2
+        if update > 0:
+            if options.verbose:
+                if update == 1:
+                    print ':: Adding %s-%s' % (pkgname, pkgver)
+                elif update == 2:
+                    print ':: Updating %s (%s -> %s)' % (pkgname, oldpkg['version'], pkgver)
             pkgpath = '/'.join((path, pkgdir))
             pkg = {}
 
@@ -234,8 +239,7 @@ def update_repo_from_dir(path, dbfile, options):
                     with open(pathfile) as f:
                         parse_fctn[fname](pkg, f)
 
-            insert_pkg(pkg, cur)
-            conn.commit()
+            commit_pkg(pkg, conn, cur)
 
     # check for removed package
     rows = cur.execute('select name,version from pkg')
@@ -248,32 +252,40 @@ def update_repo_from_dir(path, dbfile, options):
             d = join(path, '%s-%s' %( pkgname, pkgver))
             if not isdir(d):
                 if options.verbose:
-                    print ':: removing %s-%s' % (pkgname, pkgver)
+                    print ':: Removing %s-%s' % (pkgname, pkgver)
                 cur.execute('delete from pkg where name=?', (pkgname,))
+                conn.commit()
         pkgs = rows.fetchmany()
+
+    cur.close()
+    conn.close()
 
 def convert(path, dbfile):
     tf = None
     if isfile(path):
-        tf = tfopen(path)
+        try:
+            tf = tfopen(path)
+        except TarError:
+            print >> stderr, 'Error: Unable to open %s' % path
+            return 1
 
     try:
         conn, cur = open_db(dbfile)
         # clean the db
         cur.execute('delete from pkg')
+        conn.commit()
         if tf is not None:
             convert_tarball(tf, conn, cur)
         else:
             convert_dir(path, conn, cur)
 
-        conn.commit()
         cur.close()
         conn.close()
 
-        return True
+        return 0
     except sqlite3.OperationalError, e:
         print >> stderr, 'Error: %s' % e
-        return False
+        return 1
 
 if __name__ == '__main__':
     if len(argv) < 2:
@@ -288,7 +300,12 @@ Convert an alpm directory or a .files.tar.gz file to a sqlite db file''' % argv[
     elif isfile(path):
         if path.endswith('.files.tar.gz'):
             dbfile = path.replace('.files.tar.gz', '.db')
-            print ':: converting %s file into %s' % (path, dbfile)
-            tf = tfopen(path)
+        elif path.endswith('.tar.gz'):
+            dbfile = path.replace('.tar.gz', '.db')
+        elif path.endswith('.tar.bz2'):
+            dbfile = path.replace('.tar.bz2', '.db')
+        else:
+            dbfile = path+'.db' # ??
+        print ':: converting %s file into %s' % (path, dbfile)
 
-        convert(path, dbfile)
+    exit(convert(path, dbfile))

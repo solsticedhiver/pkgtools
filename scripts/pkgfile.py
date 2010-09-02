@@ -185,8 +185,8 @@ def update_repo(options, target_repo=None):
                 print ':: Converting [%s] file list ...' % repo
                 ret = convert(filename, '%s/%s.db' % (FILELIST_DIR, repo))
                 unlink(filename)
-                if not ret:
-                    print >> stderr, 'Warning: Unable to extract %s' % filelist
+                if ret != 0:
+                    print >> stderr, 'Warning: Unable to convert %s' % filelist
                     continue
 
                 repo_done.append(repo)
@@ -196,7 +196,7 @@ def update_repo(options, target_repo=None):
                 continue
 
     print ':: Converting local repo ...'
-    local_db = '%s/local.db' % FILELIST_DIR
+    local_db = join(FILELIST_DIR, 'local.db')
     local_dbpath = join(find_dbpath(), 'local')
     if exists(local_db):
         update_repo_from_dir(local_dbpath, local_db, options)
