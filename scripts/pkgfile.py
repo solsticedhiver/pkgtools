@@ -2,9 +2,11 @@
 ###
 # pkgfile.py -- search the arch repo to see what package owns a file
 # This program is a part of pkgtools
-
-# Copyright (C) 2008-2010 Daenyth <Daenyth+Arch _AT_ gmail _DOT_ com>
+#
 # Copyright (C) 2010 solsTiCe d'Hiver <solstice.dhiver@gmail.com>
+#
+# original bash version copyright was:
+# Copyright (C) 2008-2010 Daenyth <Daenyth+Arch _AT_ gmail _DOT_ com>
 #
 # Pkgtools is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -151,7 +153,7 @@ def print_pkg(pkg):
             pass
     print
 
-def update(options, target_repo=None):
+def update_repo(options, target_repo=None):
     signal.signal(signal.SIGINT, handle_SIGINT)
     signal.signal(signal.SIGTERM, handle_SIGTERM)
 
@@ -205,13 +207,13 @@ def update(options, target_repo=None):
     unlock()
 
 def list_files(s, options):
-    repo = ''
+    target_repo = ''
     if '/' in s:
         res = s.split('/')
         if len(res) > 2:
             print >> stderr, 'If given foo/bar, assume "bar" package in "foo" repo'
             return
-        repo, pkg = res
+        target_repo, pkg = res
     else:
         pkg = s
 
@@ -220,130 +222,94 @@ def list_files(s, options):
         sql_stmt, search = ('select name,files from pkg where name like ?' , (pkg.replace('*', '%').replace('?', '_'),))
 
     res = []
-    if not options.remote and repo == '':
-        conn, cur = open_db(join(FILELIST_DIR, 'local.db'))
-        rows = cur.execute(sql_stmt, search)
-        matches = rows.fetchmany()
-        while matches:
-            for pkg, files in matches:
-                for f in files :
-                    if options.binaries:
-                        if '/sbin/' in f or '/bin/' in f:
-                            res.append('%s /%s' % (pkg, f))
-                    else:
-                        res.append('%s /%s' % (pkg, f))
-            res.sort()
-            matches = rows.fetchmany()
+    if options.local:
+        repo_list = ['local.db']
+    else:
+        repo_list = listdir(FILELIST_DIR)
+        del repo_list[repo_list.index('local.db')]
 
-        cur.close()
-        conn.close()
-
-    if res != []:
-        print '\n'.join(res)
-        return
-
-    repo_list = listdir(FILELIST_DIR)
-    del repo_list[repo_list.index('local.db')]
+    foundpkg = False
     for dbfile in repo_list:
-        if repo != '' and repo != dbfile.replace('.db', ''):
+        repo = dbfile.replace('.db', '')
+        if target_repo != '' and target_repo != repo:
             continue
+
         conn, cur = open_db(join(FILELIST_DIR, dbfile))
         rows = cur.execute(sql_stmt, search)
         matches = rows.fetchmany()
-        while matches:
+        while matches != []:
+            foundpkg = True
             for pkg, files in matches:
-                for f in files:
+                for f in sorted(files):
                     if options.binaries:
                         if '/sbin/' in f or '/bin/' in f:
-                            res.append('%s /%s' % (pkg, f))
+                            print '%s /%s' % (pkg, f)
                     else:
-                        res.append('%s /%s' % (pkg, f))
-            res.sort()
+                        print '%s /%s' % (pkg, f)
             matches = rows.fetchmany()
 
         cur.close()
         conn.close()
 
-    if res == []:
+    if not foundpkg:
         print 'Package "%s" not found' % pkg,
-        if repo != '':
-            print ' in repo %s' % repo,
+        if target_repo != '':
+            print ' in repo %s' % target_repo,
         print
-    else:
-        print '\n'.join(res)
 
-def pkgquery(filename, options):
+def query_pkg(filename, options):
     if options.glob:
         from fnmatch import translate
         regex = translate(filename)
     else:
-        regex = filename
-    if not options.case_sensitive:
-        flags = re.IGNORECASE
-    else:
-        flags = 0 # case sensitive search by default
+        indx = 1 if filename.startswith('/') else 0
+        regex = '.*/'+filename[indx:]+'$'
+
+    flags = 0 if options.case_sensitive else re.IGNORECASE
+
     try:
         filematch = re.compile(regex, flags)
     except re.error:
         die(1, 'Error: You need -g option to use * and ?')
 
-    if exists(filename) and not options.remote:
-        conn, cur = open_db('%s/local.db' % FILELIST_DIR)
-        rows = cur.execute('select name,files from pkg')
+    if exists(filename) or options.local:
+        repo_list = ['local.db']
+    else:
+        repo_list = listdir(FILELIST_DIR)
+        del repo_list[repo_list.index('local.db')]
 
-        pkgfiles = rows.fetchmany()
-        pkgname = ''
-        # search the package name that have a filename
-        while pkgfiles:
-            for n,fls in pkgfiles:
-                for f in fls:
-                    if filematch.match('/'+f):
-                        pkgname = n
-                        break
-            pkgfiles = rows.fetchmany()
-
-        if pkgname == '':
-            cur.close()
-            conn.close()
-            die(1, 'Unable to find package info for file %s' % filename)
-
-        pkg = cur.execute('select * from pkg where name=?', (pkgname,)).fetchone()
-        cur.close()
-        conn.close()
-        print_pkg(pkg)
-        return
-
-    # try in the other repo
-    repo_list = listdir(FILELIST_DIR)
-    del repo_list[repo_list.index('local.db')]
-    pkgname = ''
+    foundfile = False
     for dbfile in repo_list:
         conn, cur = open_db(join(FILELIST_DIR, dbfile))
-        rows = cur.execute('select name,files from pkg')
+        repo = dbfile.replace('.db', '')
+        rows = cur.execute('select name,version,files from pkg')
 
         pkgfiles = rows.fetchmany()
         # search the package name that have a filename
-        while pkgfiles and not pkgname:
-            for n,fls in pkgfiles:
-                for f in fls:
-                    if filematch.match('/'+f):
-                        pkgname = n
-                        break
-                if pkgname: break
+        res = []
+        while pkgfiles != []:
+            for n, v, fls in pkgfiles:
+                matches = [f for f in fls if filematch.match('/'+f)]
+                if matches != []:
+                    foundfile = True
+                    if options.info:
+                        res.append(n)
+                    else:
+                        if options.verbose:
+                            print '\n'.join('%s/%s (%s) : /%s' % (repo, n, v, f) for f in matches)
+                        else:
+                            print '%s/%s' % (repo, n)
             pkgfiles = rows.fetchmany()
 
-        if pkgname: break
-        # keep the conn alive if we have found a package
+        for n in res:
+            pkg = cur.execute('select * from pkg where name=?', (n,)).fetchone()
+            print_pkg(pkg)
         cur.close()
         conn.close()
 
-    if pkgname == '':
-        die(1, 'Unable to find package info for file %s' % filename)
-
-    pkg = cur.execute('select * from pkg where name=?', (pkgname,)).fetchone()
-    cur.close()
-    conn.close()
-    print_pkg(pkg)
+    if not foundfile:
+        die(1, 'Unable to find any file %s' % filename)
+    return
 
 if __name__ == '__main__':
     usage = '%prog [ACTIONS] [OPTIONS] filename'
@@ -367,8 +333,8 @@ if __name__ == '__main__':
             default=False, help='make searches case sensitive')
     parser.add_option('-g', '--glob', dest='glob', action='store_true',
             default=False, help='allow the use of * and ? as wildcards')
-    parser.add_option('-R', '--remote', dest='remote', action='store_true',
-            default=False, help='exclude from the search the local pacman repository')
+    parser.add_option('-L', '--local', dest='local', action='store_true',
+            default=False, help='search only in the local pacman repository')
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
             default=False, help='enable verbose output')
 
@@ -391,17 +357,17 @@ if __name__ == '__main__':
 
     if options.update:
         try:
-            update(options, target_repo=args[0])
+            update_repo(options, target_repo=args[0])
         except IndexError:
-            update(options)
+            update_repo(options)
     elif options.list:
         try:
             list_files(args[0], options)
         except IndexError:
             die(1, 'Error: No target specified to search for !')
-    elif options.info:
+    elif options.info or options.search:
         try:
-            pkgquery(args[0], options)
+            query_pkg(args[0], options)
         except IndexError:
             die(1, 'Error: No target specified to search for !')
 

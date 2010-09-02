@@ -184,8 +184,10 @@ def convert_tarball(tf, conn, cur):
             fname = basename(ti.name)
             if fname not in ('desc', 'depends', 'files'):
                 continue
-            pkgname = '-'.join(basename(dirname(ti.name)).split('-')[:-2])
-            pkg = {'name':pkgname}
+            pkgdir = basename(dirname(ti.name))
+            pkgname = '-'.join(pkgdir.split('-')[:-2])
+            pkgver = '-'.join(pkgdir.split('-')[-2:])
+            pkg = {'name':pkgname, 'version':pkgver}
             parse_fctn[fname](pkg, f)
             f.close()
 
