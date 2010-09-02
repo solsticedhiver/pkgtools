@@ -24,12 +24,13 @@
 ##
 
 from sys import exit, stderr
-from os.path import exists, join
+from os.path import exists, join, basename
 from os import unlink, getpid, listdir, getenv, umask
 from optparse import OptionParser, OptionGroup
+import glob
+import re
 import signal
 from subprocess import Popen, PIPE
-import re
 from urllib import urlretrieve
 from alpm2sqlite import convert, open_db, update_repo_from_dir
 
@@ -222,19 +223,20 @@ def list_files(s, options):
         sql_stmt, search = ('select name,files from pkg where name like ?' , (pkg.replace('*', '%').replace('?', '_'),))
 
     res = []
+    local_db = join(FILELIST_DIR, 'local.db')
     if options.local:
-        repo_list = ['local.db']
+        repo_list = [local_db]
     else:
-        repo_list = listdir(FILELIST_DIR)
-        del repo_list[repo_list.index('local.db')]
+        repo_list = glob.glob(join(FILELIST_DIR, '*.db'))
+        del repo_list[repo_list.index(local_db)]
 
     foundpkg = False
     for dbfile in repo_list:
-        repo = dbfile.replace('.db', '')
+        repo = basename(dbfile).replace('.db', '')
         if target_repo != '' and target_repo != repo:
             continue
 
-        conn, cur = open_db(join(FILELIST_DIR, dbfile))
+        conn, cur = open_db(dbfile)
         rows = cur.execute(sql_stmt, search)
         matches = rows.fetchmany()
         while matches != []:
@@ -272,16 +274,17 @@ def query_pkg(filename, options):
     except re.error:
         die(1, 'Error: You need -g option to use * and ?')
 
+    local_db = join(FILELIST_DIR, 'local.db')
     if exists(filename) or options.local:
-        repo_list = ['local.db']
+        repo_list = [local_db]
     else:
-        repo_list = listdir(FILELIST_DIR)
-        del repo_list[repo_list.index('local.db')]
+        repo_list = glob.glob(join(FILELIST_DIR, '*.db'))
+        del repo_list[repo_list.index(local_db)]
 
     foundfile = False
     for dbfile in repo_list:
-        conn, cur = open_db(join(FILELIST_DIR, dbfile))
-        repo = dbfile.replace('.db', '')
+        conn, cur = open_db(dbfile)
+        repo = basename(dbfile).replace('.db', '')
         rows = cur.execute('select name,version,files from pkg')
 
         pkgfiles = rows.fetchmany()

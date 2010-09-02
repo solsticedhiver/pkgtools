@@ -145,14 +145,18 @@ def open_db(dbfile):
     conn = sqlite3.connect(dbfile, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.text_factory = str
     conn.row_factory = sqlite3.Row
-    # do not sync to disk. If the OS crashes, the db will be corrupted.
-    conn.execute('pragma synchronous=0')
-
     # check the integrity of the db
-    row = conn.execute('pragma integrity_check').fetchone()
+    try:
+        row = conn.execute('pragma integrity_check').fetchone()
+    except sqlite3.DatabaseError:
+        print >> stderr, 'Error: %s does not seem to be a sqlite3 db.' % dbfile
+        exit(2)
     if row[0] != 'ok':
         print >> stderr, 'Error: the db %s is corrupted' % dbfile
         exit(2)
+
+    # do not sync to disk. If the OS crashes, the db will be corrupted.
+    conn.execute('pragma synchronous=0')
 
     # create the db if it's not already there
     conn.execute('''create table if not exists pkg(name varchar(64),
