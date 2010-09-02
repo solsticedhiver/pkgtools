@@ -278,8 +278,12 @@ def pkgquery(filename, options):
         regex = translate(filename)
     else:
         regex = filename
+    if not options.case_sensitive:
+        flags = re.IGNORECASE
+    else:
+        flags = 0 # case sensitive search by default
     try:
-        filematch = re.compile(regex)
+        filematch = re.compile(regex, flags)
     except re.error:
         die(1, 'Error: You need -g option to use * and ?')
 
