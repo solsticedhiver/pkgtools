@@ -28,7 +28,7 @@ import os
 import re
 import signal
 from sys import exit, stderr
-from os.path import exists, join, basename
+from os.path import exists, join, basename, expanduser
 from optparse import OptionParser, OptionGroup
 from subprocess import Popen, PIPE
 from urllib import urlretrieve
@@ -62,7 +62,7 @@ def parse_config(filename, comment_char='#', option_char='='):
             if option_char in line:
                 option, value = line.split(option_char, 1)
                 option = option.strip()
-                value = value.strip()
+                value = value.strip('"\' ')
                 try:
                     options[option] = int(value)
                 except ValueError:
@@ -79,7 +79,7 @@ def load_config(conf_file):
     if exists(xdg_conf_file):
         tmp = parse_config(xdg_conf_file)
         for k in tmp:
-            options[k] = tmp[k]
+            options[k] = expanduser(tmp[k])
     # NOT IMPLEMENTED: ${HOME}/.pkgtools/pkgfile.conf.
     # We could say it's depreciated and obsolete
     return options
@@ -199,7 +199,7 @@ def update_repo(options, target_repo=None):
                 # tmp file will be automatically deleted after the process dies
 
                 print ':: Converting [%s] file list ...' % repo
-                ret = convert(filename, '%s/%s.db' % (FILELIST_DIR, repo))
+                ret = convert(filename, '%s/%s.db' % (FILELIST_DIR, repo), options)
                 if ret != 0:
                     print >> stderr, 'Warning: Unable to convert %s' % filelist
                     continue
@@ -384,7 +384,7 @@ def main():
     # TODO: trash this to the bin with load_config and parse_config
     dict_options = load_config('pkgfile.conf')
     try:
-        FILELIST_DIR = dict_options['FILELIST_DIR']
+        FILELIST_DIR = dict_options['FILELIST_DIR'].rstrip('/')
     except KeyError:
         pass
     # PKGTOOLS_DIR is meaningless here
