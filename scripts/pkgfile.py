@@ -210,14 +210,15 @@ def update_repo(options, target_repo=None):
                 print >> stderr, 'Warning: could not retrieve %s' % filelist
                 continue
 
-    print ':: Converting local repo ...'
-    local_db = join(FILELIST_DIR, 'local.db')
-    local_dbpath = join(find_dbpath(), 'local')
-    if exists(local_db):
-        update_repo_from_dir(local_dbpath, local_db, options)
-    else:
-        convert(local_dbpath, local_db, options)
-    print 'Done'
+    if target_repo is None or target_repo == 'local':
+        print ':: Converting local repo ...'
+        local_db = join(FILELIST_DIR, 'local.db')
+        local_dbpath = join(find_dbpath(), 'local')
+        if exists(local_db):
+            update_repo_from_dir(local_dbpath, local_db, options)
+        else:
+            convert(local_dbpath, local_db, options)
+        print 'Done'
 
     # remove left-over db (for example for repo removed from pacman config)
     repos = glob.glob(join(FILELIST_DIR, '*.db'))
@@ -372,7 +373,7 @@ def main():
     parser.add_option('-c', '--case-sensitive', dest='case_sensitive', action='store_true',
             default=False, help='make searches case sensitive')
     parser.add_option('-g', '--glob', dest='glob', action='store_true',
-            default=False, help='allow the use of * and ? as wildcards')
+            default=False, help='allow the use of * and ? as wildcards. You need to escape the string with \' from the shell')
     parser.add_option('-L', '--local', dest='local', action='store_true',
             default=False, help='search only in the local pacman repository')
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
@@ -380,7 +381,7 @@ def main():
 
     (options, args) = parser.parse_args()
 
-    # This section is here for backward compatibilty but there is no need for it
+    # This section is here for backward compatibility but there is no need for it
     # TODO: trash this to the bin with load_config and parse_config
     dict_options = load_config('pkgfile.conf')
     try:
@@ -406,6 +407,9 @@ def main():
         except IndexError:
             die(1, 'Error: No target specified to search for !')
     elif options.info or options.search:
+        if options.search and options.info:
+            print >>stderr, 'Warning: -s and -i are exclusive. Defaulting to search'
+            options.info = False
         try:
             query_pkg(args[0], options)
         except IndexError:
