@@ -216,7 +216,7 @@ def update_repo(options, target_repo=None):
     if exists(local_db):
         update_repo_from_dir(local_dbpath, local_db, options)
     else:
-        convert(local_dbpath, local_db)
+        convert(local_dbpath, local_db, options)
     print 'Done'
 
     # remove left-over db (for example for repo removed from pacman config)
@@ -232,11 +232,12 @@ def update_repo(options, target_repo=None):
 
 def check_FILELIST_DIR():
     if not exists(FILELIST_DIR):
-        die(1, 'Error: %s does not exist. You might want to run pkgfile -u first.' % FILELIST_DIR)
+        die(1, 'Error: %s does not exist. You might want to run "pkgfile -u" first.' % FILELIST_DIR)
     if len(glob.glob(join(FILELIST_DIR, '*.db'))) ==  0:
-        die(1, 'Error: You need to run pkgfile -u first.' % FILELIST_DIR)
+        die(1, 'Error: You need to run "pkgfile -u" first.')
 
 def list_files(s, options):
+    '''list files of package matching s'''
     check_FILELIST_DIR()
 
     target_repo = ''
@@ -291,6 +292,7 @@ def list_files(s, options):
         print
 
 def query_pkg(filename, options):
+    '''search package with a file matching filename'''
     check_FILELIST_DIR()
 
     if options.glob:
@@ -299,6 +301,7 @@ def query_pkg(filename, options):
     else:
         if '*' in filename or '?' in filename:
             print >> stderr, 'Warning: You need to use -g for * and ? wildcards'
+            # TODO: May be we could remove -g and use auto-detection ?
         indx = 1 if filename.startswith('/') else 0
         regex = '.*/'+filename[indx:]+'$'
 

@@ -159,28 +159,52 @@ def open_db(dbfile):
     conn.execute('pragma synchronous=0')
 
     # create the db if it's not already there
-    conn.execute('''create table if not exists pkg(name varchar(64),
-        filename varchar(64), version varchar(32), desc varchar(512),
-        url varchar(256), packager varchar(128), md5sum varchar(32),
-        arch varchar(6),  builddate datetime, installdate datetime, isize integer,
-        csize integer, reason integer, license list, groups list, depends list,
-        optdepends list, conflicts list, provides list, replaces list,
-        files list, backup list, force integer)''')
+    conn.execute('''create table if not exists pkg(
+        name        varchar(64),
+        filename    varchar(64),
+        version     varchar(32),
+        desc        varchar(512),
+        url         varchar(256),
+        packager    varchar(128),
+        md5sum      varchar(32),
+        arch        varchar(6),
+        builddate   datetime,
+        installdate datetime,
+        isize       integer,
+        csize       integer,
+        reason      integer,
+        license     list,
+        groups      list,
+        depends     list,
+        optdepends  list,
+        conflicts   list,
+        provides    list,
+        replaces    list,
+        files       list,
+        backup      list,
+        force       integer)''')
 
     cur = conn.cursor()
 
     return (conn, cur)
 
-def commit_pkg(pkg, conn, cur):
+def commit_pkg(pkg, conn, cur, options):
     row = cur.execute('select rowid from pkg where name=?', (pkg['name'],)).fetchone()
     if row is not None:
+        if options.verbose:
+            # we could only show the pkgname because convert_tarball pass only
+            # incomplete pkg dict
+            print ':: Updating %s' % pkg['name']
         cur.execute('update pkg set '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' where name=:name', pkg)
     else:
+        if options.verbose:
+            # same remark as above
+            print ':: Adding %s' % pkg['name']
         cur.execute('insert into pkg ('+','.join(p for p in pkg)+') values('+ ','.join(':%s' % p for p in pkg)+')', pkg)
     conn.commit()
 
-def convert_tarball(tf, conn, cur):
-    # Do not try to create a complete pkg object
+def convert_tarball(tf, conn, cur, options):
+    # Do not try to create a complete pkg dict
     # but instead commit to db as soon as we have parsed a file
     for ti in tf:
         if ti.isfile():
@@ -190,14 +214,16 @@ def convert_tarball(tf, conn, cur):
                 continue
             pkgdir = basename(dirname(ti.name))
             pkgname = '-'.join(pkgdir.split('-')[:-2])
+            # use pkgver from pkgdir because some repo do not include desc in their
+            # *.files.tar.gz (arch-games for example)
             pkgver = '-'.join(pkgdir.split('-')[-2:])
             pkg = {'name':pkgname, 'version':pkgver}
             parse_fctn[fname](pkg, f)
             f.close()
 
-            commit_pkg(pkg, conn, cur)
+            commit_pkg(pkg, conn, cur, options)
 
-def convert_dir(path, conn, cur):
+def convert_dir(path, conn, cur, options):
     for pkgdir in sorted(listdir(path)):
         pkgpath = '/'.join((path, pkgdir))
         pkg = {}
@@ -208,10 +234,11 @@ def convert_dir(path, conn, cur):
                 with open(pathfile) as f:
                     parse_fctn[fname](pkg, f)
 
-        commit_pkg(pkg, conn, cur)
+        commit_pkg(pkg, conn, cur, options)
 
 def update_repo_from_dir(path, dbfile, options):
-    '''update sqlite db from a directory'''
+    '''update sqlite db from a repo directory
+This function avoids parsing unnecessary files and a lot of I/O'''
     conn, cur = open_db(dbfile)
 
     # look for new or changed packages
@@ -243,7 +270,7 @@ def update_repo_from_dir(path, dbfile, options):
                     with open(pathfile) as f:
                         parse_fctn[fname](pkg, f)
 
-            commit_pkg(pkg, conn, cur)
+            commit_pkg(pkg, conn, cur, options)
 
     # check for removed package
     rows = cur.execute('select name,version from pkg')
@@ -264,7 +291,8 @@ def update_repo_from_dir(path, dbfile, options):
     cur.close()
     conn.close()
 
-def convert(path, dbfile):
+def convert(path, dbfile, options):
+    '''convert either a repo directory or a *.files.tar.gz to a sqlite3 db'''
     tf = None
     if isfile(path):
         try:
@@ -275,13 +303,13 @@ def convert(path, dbfile):
 
     try:
         conn, cur = open_db(dbfile)
-        # clean the db
+        # clean the db to start from scratch
         cur.execute('delete from pkg')
         conn.commit()
         if tf is not None:
-            convert_tarball(tf, conn, cur)
+            convert_tarball(tf, conn, cur, options)
         else:
-            convert_dir(path, conn, cur)
+            convert_dir(path, conn, cur, options)
 
         cur.close()
         conn.close()
