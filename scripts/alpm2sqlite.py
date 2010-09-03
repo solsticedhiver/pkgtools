@@ -240,6 +240,11 @@ def convert_dir(path, conn, cur, options):
 
         commit_pkg(pkg, conn, cur, options)
 
+def update_repo_from_tarball(tf, dbfile, options):
+    '''update sqlite db from a repo directory
+This function avoids parsing unnecessary files'''
+    pass
+
 def update_repo_from_dir(path, dbfile, options):
     '''update sqlite db from a repo directory
 This function avoids parsing unnecessary files and a lot of I/O'''
