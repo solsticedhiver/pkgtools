@@ -27,6 +27,7 @@ import glob
 import os
 import re
 import signal
+import atexit
 from sys import exit, stderr
 from os.path import exists, join, basename, expanduser
 from optparse import OptionParser, OptionGroup
@@ -99,16 +100,15 @@ def lock():
 
 def unlock():
     try:
-        os.unlink(LOCKFILE)
+        if exists(LOCKFILE):
+            os.unlink(LOCKFILE)
     except OSError:
         print >> stderr, 'Warning: Failed to unlock %s' % LOCKFILE
 
 def handle_SIGINT(signum, frame):
-    unlock()
-    die(1, 'Caught SIGINT -- aborting!')
+    die(1, 'Caught SIGINT. Aborting!')
 
 def handle_SIGTERM(signum, frame):
-    unlock()
     die(1, 'Killed!')
 
 PKG_ATTRS = ('name', 'filename', 'version', 'desc', 'groups', 'url', 'license', 'arch',
@@ -416,7 +416,9 @@ def main():
             die(1, 'Error: No target specified to search for !')
 
 if __name__ == '__main__':
+    atexit.register(unlock)
+
     try:
         main()
     except KeyboardInterrupt:
-        pass
+        print

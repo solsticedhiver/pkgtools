@@ -189,19 +189,23 @@ def open_db(dbfile):
     return (conn, cur)
 
 def commit_pkg(pkg, conn, cur, options):
-    row = cur.execute('select rowid from pkg where name=?', (pkg['name'],)).fetchone()
-    if row is not None:
-        if options.verbose:
-            # we could only show the pkgname because convert_tarball pass only
-            # incomplete pkg dict
-            print ':: Updating %s' % pkg['name']
-        cur.execute('update pkg set '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' where name=:name', pkg)
-    else:
-        if options.verbose:
-            # same remark as above
-            print ':: Adding %s' % pkg['name']
-        cur.execute('insert into pkg ('+','.join(p for p in pkg)+') values('+ ','.join(':%s' % p for p in pkg)+')', pkg)
-    conn.commit()
+    try:
+        row = cur.execute('select rowid from pkg where name=?', (pkg['name'],)).fetchone()
+        if row is not None:
+            if options.verbose:
+                # we could only show the pkgname because convert_tarball pass only
+                # incomplete pkg dict
+                print ':: Updating %s' % pkg['name']
+            cur.execute('update pkg set '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' where name=:name', pkg)
+        else:
+            if options.verbose:
+                # same remark as above
+                print ':: Adding %s' % pkg['name']
+            cur.execute('insert into pkg ('+','.join(p for p in pkg)+') values('+ ','.join(':%s' % p for p in pkg)+')', pkg)
+        conn.commit()
+    except sqlite3.Error, e:
+        print >> stderr, 'SQLite3 %s' % e
+        exit(1)
 
 def convert_tarball(tf, conn, cur, options):
     # Do not try to create a complete pkg dict
