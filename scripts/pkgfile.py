@@ -158,7 +158,15 @@ def update_repo(options, target_repo=None):
     signal.signal(signal.SIGINT, handle_SIGINT)
     signal.signal(signal.SIGTERM, handle_SIGTERM)
 
-    # check FILELIST_DIR is writable
+    # check if FILELIST_DIR exists
+    if not exists(FILELIST_DIR):
+        print >> stderr, 'Warning: %s does not exist. Creating it.' % FILELIST_DIR
+        try:
+            os.mkdir(FILELIST_DIR, 0755)
+        except OSError:
+            die(1, 'Error: Can\'t create %s directory' % FILELIST_DIR)
+
+    # check if FILELIST_DIR is writable
     if not os.access(FILELIST_DIR, os.F_OK|os.R_OK|os.W_OK|os.X_OK):
         die(1, 'Error: %s is not accessible' % FILELIST_DIR)
 
@@ -222,7 +230,15 @@ def update_repo(options, target_repo=None):
 
     unlock()
 
+def check_FILELIST_DIR():
+    if not exists(FILELIST_DIR):
+        die(1, 'Error: %s does not exist. You might want to run pkgfile -u first.' % FILELIST_DIR)
+    if len(glob.glob(join(FILELIST_DIR, '*.db'))) ==  0:
+        die(1, 'Error: You need to run pkgfile -u first.' % FILELIST_DIR)
+
 def list_files(s, options):
+    check_FILELIST_DIR()
+
     target_repo = ''
     if '/' in s:
         res = s.split('/')
@@ -275,6 +291,8 @@ def list_files(s, options):
         print
 
 def query_pkg(filename, options):
+    check_FILELIST_DIR()
+
     if options.glob:
         from fnmatch import translate
         regex = translate(filename)
