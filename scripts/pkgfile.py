@@ -316,7 +316,6 @@ def query_pkg(filename, options):
         repo_list = glob.glob(join(FILELIST_DIR, '*.db'))
         del repo_list[repo_list.index(local_db)]
 
-    foundfile = False
     for dbfile in repo_list:
         conn, cur = open_db(dbfile)
         repo = basename(dbfile).replace('.db', '')
@@ -327,11 +326,10 @@ def query_pkg(filename, options):
         res = []
         while pkgfiles != []:
             for n, v, fls in pkgfiles:
-                matches = [f for f in fls if filematch.match('/'+f)]
+                matches = [f for f in sorted(fls) if filematch.match('/'+f)]
                 if matches != []:
-                    foundfile = True
                     if options.info:
-                        res.append(n)
+                        res.append((n, matches))
                     else:
                         if options.verbose:
                             print '\n'.join('%s/%s (%s) : /%s' % (repo, n, v, f) for f in matches)
@@ -339,9 +337,12 @@ def query_pkg(filename, options):
                             print '%s/%s' % (repo, n)
             pkgfiles = rows.fetchmany()
 
-        for n in res:
+        for n, fls in res:
             pkg = cur.execute('select * from pkg where name=?', (n,)).fetchone()
             print_pkg(pkg)
+            if options.verbose:
+                print '\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls) 
+                print
         cur.close()
         conn.close()
 
