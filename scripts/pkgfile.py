@@ -40,6 +40,18 @@ CONFIG_DIR = '/etc/pkgtools'
 FILELIST_DIR = '/var/cache/pkgtools/lists'
 LOCKFILE = '/var/lock/pkgfile'
 
+class Verbose(object):
+    # http://www.velocityreviews.com/forums/showpost.php?p=1772631&postcount=5
+    def __init__(self, verbosity=0, log=sys.stderr):
+        self.verbosity = verbosity
+        self.log = log
+
+    def __call__(self, verbosity, msg):
+        if verbosity <= self.verbosity:
+            print >> self.log, msg
+
+verbose = Verbose(1, sys.stdout)
+
 def find_dbpath():
     '''find pacman dbpath'''
 
@@ -151,6 +163,8 @@ def print_pkg(pkg):
 def update_repo(options, target_repo=None):
     '''download .files.tar.gz for each repo found in pacman config or the one specified and convert them to a sqlite3 db'''
 
+    print verbose.verbosity
+
     if not os.path.exists(FILELIST_DIR):
         print >> sys.stderr, 'Warning: %s does not exist. Creating it.' % FILELIST_DIR
         try:
@@ -181,23 +195,22 @@ def update_repo(options, target_repo=None):
         if target_repo is not None and repo != target_repo:
             continue
         if repo not in repo_done:
-            print ':: Downloading [%s] file list ...' % repo
+            verbose(1, ':: Downloading [%s] file list ...' % repo)
             repofile = '%s.files.tar.gz' % repo
             filelist = os.path.join(mirror, repofile)
 
             try:
-                if options.verbose:
-                    print 'Trying mirror %s ...' % mirror
+                verbose(2,  'Trying mirror %s ...' % mirror)
                 filename, headers = urllib.urlretrieve(filelist)
                 # tmp file will be automatically deleted after the process dies
 
-                print ':: Converting [%s] file list ...' % repo
+                verbose(1, ':: Converting [%s] file list ...' % repo)
                 # TODO: catch error better
                 try:
                     # TODO: use update_repo_from_tarball
                     alpm2sqlite.convert(filename, '%s/%s.db' % (FILELIST_DIR, repo), options)
                     repo_done.append(repo)
-                    print 'Done'
+                    verbose(1, 'Done')
                 except tarfile.TarError:
                     # error already printed in convert
                     pass
@@ -208,13 +221,13 @@ def update_repo(options, target_repo=None):
     local_db = os.path.join(FILELIST_DIR, 'local.db')
 
     if target_repo is None or target_repo == 'local':
-        print ':: Converting local repo ...'
+        verbose(1, ':: Converting local repo ...')
         local_dbpath = os.path.join(find_dbpath(), 'local')
         if os.path.exists(local_db):
             alpm2sqlite.update_repo_from_dir(local_dbpath, local_db, options)
         else:
             alpm2sqlite.convert(local_dbpath, local_db, options)
-        print 'Done'
+        verbose(1, 'Done')
 
     # remove left-over db (for example for repo removed from pacman config)
     repos = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
@@ -222,7 +235,7 @@ def update_repo(options, target_repo=None):
     registered_repos.add(local_db)
     for r in repos:
         if r not in registered_repos:
-            print ':: Deleting %s' % r
+            verbose(1, ':: Deleting %s' % r)
             os.unlink(r)
 
     unlock()
@@ -277,19 +290,19 @@ def list_files(s, options):
                 for f in sorted(files):
                     if options.binaries:
                         if '/sbin/' in f or '/bin/' in f:
-                            print '%s /%s' % (pkg, f)
+                            verbose(1, '%s /%s' % (pkg, f))
                     else:
-                        print '%s /%s' % (pkg, f)
+                        verbose(1, '%s /%s' % (pkg, f))
             matches = rows.fetchmany()
 
         cur.close()
         conn.close()
 
     if not foundpkg:
-        print 'Package "%s" not found' % pkg,
+        print >> stderr, 'Package "%s" not found' % pkg,
         if target_repo != '':
-            print ' in repo %s' % target_repo,
-        print
+            print >> stderr, ' in repo %s' % target_repo,
+        print >> stderr , '\n' 
 
 def query_pkg(filename, options):
     '''search package with a file matching filename'''
@@ -343,9 +356,7 @@ def query_pkg(filename, options):
         for n, fls in res:
             pkg = cur.execute('SELECT * FROM pkg WHERE name=?', (n,)).fetchone()
             print_pkg(pkg)
-            if options.verbose:
-                print '\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls) 
-                print
+            verbose(2, '\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls)+'\n')
         cur.close()
         conn.close()
 
@@ -396,6 +407,9 @@ def main():
     #   * use pycurl
     # CMD_SEARCH_ENABLED is not used here
     # UPDATE_CRON neither 
+
+    if options.verbose:
+        verbose.verbosity = 2
 
     if options.update:
         try:

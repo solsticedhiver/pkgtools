@@ -30,6 +30,17 @@ import zlib
 import sqlite3
 import datetime
 
+class Verbose(object):
+    # http://www.velocityreviews.com/forums/showpost.php?p=1772631&postcount=5
+    def __init__(self, verbosity=0, log=sys.stderr):
+        self.verbosity = verbosity
+        self.log = log
+
+    def __call__(self, verbosity, msg):
+        if verbosity <= self.verbosity:
+            print >> self.log, msg
+
+
 def die(n=-1, msg='Unknown error'):
     print >> sys.stderr, msg
     sys.exit(n)
@@ -208,15 +219,13 @@ def commit_pkg(pkg, conn, cur, options):
     try:
         row = cur.execute('SELECT rowid FROM pkg WHERE name=?', (pkg['name'],)).fetchone()
         if row is not None:
-            if options.verbose:
-                # we could only show the pkgname because convert_tarball pass only
-                # incomplete pkg dict
-                print ':: Updating %s' % pkg['name']
+            # we could only show the pkgname because convert_tarball pass only
+            # incomplete pkg dict
+            verbose(2 , ':: Updating %s' % pkg['name'])
             cur.execute('UPDATE pkg SET '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' WHERE name=:name', pkg)
         else:
-            if options.verbose:
-                # same remark as above
-                print ':: Adding %s' % pkg['name']
+            # same remark as above
+            verbose(2, ':: Adding %s' % pkg['name'])
             cur.execute('INSERT INTO pkg ('+','.join(p for p in pkg)+') VALUES('+ ','.join(':%s' % p for p in pkg)+')', pkg)
         conn.commit()
     except sqlite3.Error as e:
@@ -272,6 +281,8 @@ This function avoids parsing unnecessary files and a lot of I/O'''
 
     conn, cur = open_db(dbfile)
 
+    print verbose.verbosity
+
     # look for new or changed packages
     for pkgdir in sorted(os.listdir(path)):
         # get name and version from dir name
@@ -286,11 +297,10 @@ This function avoids parsing unnecessary files and a lot of I/O'''
         elif oldpkg['version'] != pkgver:
             update = 2
         if update > 0:
-            if options.verbose:
-                if update == 1:
-                    print ':: Adding %s-%s' % (pkgname, pkgver)
-                elif update == 2:
-                    print ':: Updating %s (%s -> %s)' % (pkgname, oldpkg['version'], pkgver)
+            if update == 1:
+                verbose(2, ':: Adding %s-%s' % (pkgname, pkgver))
+            elif update == 2:
+                verbose(2, ':: Updating %s (%s -> %s)' % (pkgname, oldpkg['version'], pkgver))
             pkgpath = '/'.join((path, pkgdir))
             pkg = {}
 
@@ -313,8 +323,7 @@ This function avoids parsing unnecessary files and a lot of I/O'''
             # look for the directory in the alpm db
             d = os.path.join(path, '%s-%s' %( pkgname, pkgver))
             if not os.path.isdir(d):
-                if options.verbose:
-                    print ':: Removing %s-%s' % (pkgname, pkgver)
+                verbose(2, ':: Removing %s-%s' % (pkgname, pkgver))
                 cur.execute('DELETE FROM pkg WHERE name=?', (pkgname,))
                 conn.commit()
         pkgs = rows.fetchmany()
@@ -353,6 +362,9 @@ if __name__ == '__main__':
         print '''Usage: %s [directory|somedb.files.tar.gz]
 Convert an alpm directory or a .files.tar.gz file to a sqlite db file''' % sys.argv[0]
         sys.exit(1)
+
+    # be verbose by default
+    verbose = Verbose(2, sys.stdout)
 
     path = sys.argv[1]
     if os.path.isdir(path):
