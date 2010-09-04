@@ -29,9 +29,12 @@ import cPickle
 import zlib
 import sqlite3
 import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 def die(n=-1, msg='Unknown error'):
-    print >> sys.stderr, msg
+    logging.error(msg)
     sys.exit(n)
 
 # _getsection and parse_* functions are borrowed from test/pacman/pmdb.py
@@ -202,27 +205,25 @@ def open_db(dbfile):
 
     return (conn, cur)
 
-def commit_pkg(pkg, conn, cur, options):
+def commit_pkg(pkg, conn, cur):
     '''add a pkg to the sqlite3 db (or update it if already there)'''
 
     try:
         row = cur.execute('SELECT rowid FROM pkg WHERE name=?', (pkg['name'],)).fetchone()
         if row is not None:
-            if options.verbose:
-                # we could only show the pkgname because convert_tarball pass only
-                # incomplete pkg dict
-                print ':: Updating %s' % pkg['name']
+            # we could only show the pkgname because convert_tarball pass only
+            # incomplete pkg dict
+            logging.debug(':: Updating %s' % pkg['name'])
             cur.execute('UPDATE pkg SET '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' WHERE name=:name', pkg)
         else:
-            if options.verbose:
-                # same remark as above
-                print ':: Adding %s' % pkg['name']
+            # same remark as above
+            logging.debug(':: Adding %s' % pkg['name'])
             cur.execute('INSERT INTO pkg ('+','.join(p for p in pkg)+') VALUES('+ ','.join(':%s' % p for p in pkg)+')', pkg)
         conn.commit()
     except sqlite3.Error as e:
         die(1, 'SQLite3 %s' % e)
 
-def convert_tarball(tarball, conn, cur, options):
+def convert_tarball(tarball, conn, cur):
     '''convert a .files.tar.gz to a sqlite3 db'''
 
     # Do not try to create a complete pkg dict
@@ -242,9 +243,9 @@ def convert_tarball(tarball, conn, cur, options):
             parsers[fname](pkg, f)
             f.close()
 
-            commit_pkg(pkg, conn, cur, options)
+            commit_pkg(pkg, conn, cur)
 
-def convert_dir(path, conn, cur, options):
+def convert_dir(path, conn, cur):
     '''convert a repo dir "pacman style" to a sqlite3 db'''
 
     for pkgdir in sorted(os.listdir(path)):
@@ -257,16 +258,16 @@ def convert_dir(path, conn, cur, options):
                 with open(pathfile) as f:
                     parsers[fname](pkg, f)
 
-        commit_pkg(pkg, conn, cur, options)
+        commit_pkg(pkg, conn, cur)
 
-def update_repo_from_tarball(tf, dbfile, options):
+def update_repo_from_tarball(tf, dbfile):
     '''update sqlite db from a repo directory
 This function avoids parsing unnecessary files'''
 
     # TODO: code that
     pass
 
-def update_repo_from_dir(path, dbfile, options):
+def update_repo_from_dir(path, dbfile):
     '''update sqlite db from a repo directory
 This function avoids parsing unnecessary files and a lot of I/O'''
 
@@ -286,11 +287,10 @@ This function avoids parsing unnecessary files and a lot of I/O'''
         elif oldpkg['version'] != pkgver:
             update = 2
         if update > 0:
-            if options.verbose:
-                if update == 1:
-                    print ':: Adding %s-%s' % (pkgname, pkgver)
-                elif update == 2:
-                    print ':: Updating %s (%s -> %s)' % (pkgname, oldpkg['version'], pkgver)
+            if update == 1:
+                logging.debug(':: Adding %s-%s' % (pkgname, pkgver))
+            elif update == 2:
+                logging.debug(':: Updating %s (%s -> %s)' % (pkgname, oldpkg['version'], pkgver))
             pkgpath = '/'.join((path, pkgdir))
             pkg = {}
 
@@ -301,7 +301,7 @@ This function avoids parsing unnecessary files and a lot of I/O'''
                     with open(pathfile) as f:
                         parsers[fname](pkg, f)
 
-            commit_pkg(pkg, conn, cur, options)
+            commit_pkg(pkg, conn, cur)
 
     # check for removed package
     rows = cur.execute('SELECT name,version FROM pkg')
@@ -313,8 +313,7 @@ This function avoids parsing unnecessary files and a lot of I/O'''
             # look for the directory in the alpm db
             d = os.path.join(path, '%s-%s' %( pkgname, pkgver))
             if not os.path.isdir(d):
-                if options.verbose:
-                    print ':: Removing %s-%s' % (pkgname, pkgver)
+                logging.debug(':: Removing %s-%s' % (pkgname, pkgver))
                 cur.execute('DELETE FROM pkg WHERE name=?', (pkgname,))
                 conn.commit()
         pkgs = rows.fetchmany()
@@ -322,7 +321,7 @@ This function avoids parsing unnecessary files and a lot of I/O'''
     cur.close()
     conn.close()
 
-def convert(path, dbfile, options):
+def convert(path, dbfile):
     '''wrapper around convert_dir and convert_tarball'''
 
     tf = None
@@ -330,7 +329,7 @@ def convert(path, dbfile, options):
         try:
             tf = tarfile.open(path)
         except tarfile.TarError as t:
-            print >> sys.stderr, 'Error: Unable to open %s' % path
+            logging.error('Error: Unable to open %s' % path)
             raise t
 
     try:
@@ -339,9 +338,9 @@ def convert(path, dbfile, options):
         cur.execute('DELETE FROM pkg')
         conn.commit()
         if tf is not None:
-            convert_tarball(tf, conn, cur, options)
+            convert_tarball(tf, conn, cur)
         else:
-            convert_dir(path, conn, cur, options)
+            convert_dir(path, conn, cur)
 
         cur.close()
         conn.close()
@@ -357,12 +356,12 @@ Convert an alpm directory or a .files.tar.gz file to a sqlite db file''' % sys.a
     path = sys.argv[1]
     if os.path.isdir(path):
         dbfile = os.path.basename('%s.db' % path.rstrip('/'))
-        print ':: converting %s repo into %s' % (path, dbfile)
+        logging.info(':: converting %s repo into %s' % (path, dbfile))
     elif os.path.isfile(path):
         if path.endswith('.files.tar.gz'):
             dbfile = path.replace('.files.tar.gz', '.db')
         else:
             dbfile = path+'.db' # ??
-        print ':: converting %s file into %s' % (path, dbfile)
+        logging.info(':: converting %s file into %s' % (path, dbfile))
 
     sys.exit(convert(path, dbfile))

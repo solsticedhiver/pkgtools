@@ -34,6 +34,7 @@ import subprocess
 import urllib
 import alpm2sqlite
 import tarfile
+import logging
 
 VERSION = '22'
 CONFIG_DIR = '/etc/pkgtools'
@@ -148,7 +149,7 @@ def print_pkg(pkg):
             print '%s: %s' % (field, value)
     print
 
-def update_repo(options, target_repo=None):
+def update_repo(target_repo=None):
     '''download .files.tar.gz for each repo found in pacman config or the one specified and convert them to a sqlite3 db'''
 
     if not os.path.exists(FILELIST_DIR):
@@ -181,23 +182,22 @@ def update_repo(options, target_repo=None):
         if target_repo is not None and repo != target_repo:
             continue
         if repo not in repo_done:
-            print ':: Downloading [%s] file list ...' % repo
+            logging.info(':: Downloading [%s] file list ...' % repo)
             repofile = '%s.files.tar.gz' % repo
             filelist = os.path.join(mirror, repofile)
 
             try:
-                if options.verbose:
-                    print 'Trying mirror %s ...' % mirror
+                logging.debug('Trying mirror %s ...' % mirror)
                 filename, headers = urllib.urlretrieve(filelist)
                 # tmp file will be automatically deleted after the process dies
 
-                print ':: Converting [%s] file list ...' % repo
+                logging.info(':: Converting [%s] file list ...' % repo)
                 # TODO: catch error better
                 try:
                     # TODO: use update_repo_from_tarball
-                    alpm2sqlite.convert(filename, '%s/%s.db' % (FILELIST_DIR, repo), options)
+                    alpm2sqlite.convert(filename, '%s/%s.db' % (FILELIST_DIR, repo))
                     repo_done.append(repo)
-                    print 'Done'
+                    logging.info('Done')
                 except tarfile.TarError:
                     # error already printed in convert
                     pass
@@ -208,13 +208,13 @@ def update_repo(options, target_repo=None):
     local_db = os.path.join(FILELIST_DIR, 'local.db')
 
     if target_repo is None or target_repo == 'local':
-        print ':: Converting local repo ...'
+        logging.info(':: Converting local repo ...')
         local_dbpath = os.path.join(find_dbpath(), 'local')
         if os.path.exists(local_db):
-            alpm2sqlite.update_repo_from_dir(local_dbpath, local_db, options)
+            alpm2sqlite.update_repo_from_dir(local_dbpath, local_db)
         else:
-            alpm2sqlite.convert(local_dbpath, local_db, options)
-        print 'Done'
+            alpm2sqlite.convert(local_dbpath, local_db)
+        logging.info('Done')
 
     # remove left-over db (for example for repo removed from pacman config)
     repos = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
@@ -222,7 +222,7 @@ def update_repo(options, target_repo=None):
     registered_repos.add(local_db)
     for r in repos:
         if r not in registered_repos:
-            print ':: Deleting %s' % r
+            logging.info(':: Deleting %s' % r)
             os.unlink(r)
 
     unlock()
@@ -301,7 +301,7 @@ def query_pkg(filename, options):
         regex = translate(filename)
     else:
         if '*' in filename or '?' in filename:
-            print >> sys.stderr, 'Warning: You need to use -g for * and ? wildcards'
+            logging.erro('Warning: You need to use -g for * and ? wildcards')
         indx = 1 if filename.startswith('/') else 0
         regex = '.*/'+filename[indx:]+'$'
 
@@ -343,9 +343,7 @@ def query_pkg(filename, options):
         for n, fls in res:
             pkg = cur.execute('SELECT * FROM pkg WHERE name=?', (n,)).fetchone()
             print_pkg(pkg)
-            if options.verbose:
-                print '\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls) 
-                print
+            logging.debug('\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls))
         cur.close()
         conn.close()
 
@@ -397,11 +395,14 @@ def main():
     # CMD_SEARCH_ENABLED is not used here
     # UPDATE_CRON neither 
 
+    if options.verbose:
+        logging.getLogger('').setLevel(level=logging.DEBUG)
+
     if options.update:
         try:
-            update_repo(options, target_repo=args[0])
+            update_repo(target_repo=args[0])
         except IndexError:
-            update_repo(options)
+            update_repo()
     elif options.list:
         try:
             list_files(args[0], options)
