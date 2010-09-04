@@ -21,15 +21,18 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 ##
 
-from sys import argv, stderr, exit
-from os import listdir
-from os.path import join, exists, isdir, isfile, basename, dirname
-from tarfile import open as tfopen, TarError
-
-from cPickle import loads, dumps
-from zlib import decompress, compress
+import sys
+import os
+import os.path
+import tarfile
+import cPickle
+import zlib
 import sqlite3
-from datetime import datetime
+import datetime
+
+def die(n=-1, msg='Unknown error'):
+    print >> sys.stderr, msg
+    sys.exit(n)
 
 # _getsection and parse_* functions are borrowed from test/pacman/pmdb.py
 
@@ -42,7 +45,11 @@ def _getsection(fd):
         i.append(line)
     return i
 
+# parse_* function parse files found in pacman repo
+
 def parse_files(pkg, f):
+    '''parse a files file'''
+
     while True:
         line = f.readline()
         if not line:
@@ -60,6 +67,8 @@ def parse_files(pkg, f):
             pkg['backup'] = _getsection(f)
 
 def parse_desc(pkg, f):
+    '''parse a desc file'''
+
     while True:
         line = f.readline()
         if not line:
@@ -81,14 +90,15 @@ def parse_desc(pkg, f):
             pkg['license'] = _getsection(f)
         elif line == "%ARCH%":
             pkg['arch'] = f.readline().strip("\n")
+        # directly keep the datetime instead of the timestamp (using local tz ?)
         elif line == "%BUILDDATE%":
             try:
-                pkg['builddate'] = datetime.fromtimestamp(int(f.readline().strip("\n")))
+                pkg['builddate'] = datetime.datetime.fromtimestamp(int(f.readline().strip("\n")))
             except ValueError:
                 pkg['builddate'] = None
         elif line == "%INSTALLDATE%":
             try:
-                pkg['installdate'] = datetime.fromtimestamp(int(f.readline().strip("\n")))
+                pkg['installdate'] = datetime.datetime.fromtimestamp(int(f.readline().strip("\n")))
             except ValueError:
                 pkg['installdate'] = None
         elif line == "%PACKAGER%":
@@ -108,6 +118,8 @@ def parse_desc(pkg, f):
             pkg['force'] = 1
 
 def parse_depends(pkg, f):
+    '''parse a depends file'''
+
     while True:
         line = f.readline()
         if not line:
@@ -122,15 +134,17 @@ def parse_depends(pkg, f):
         elif line == "%PROVIDES%":
             pkg['provides'] = _getsection(f)
 
-parse_fctn = {'files':parse_files, 'depends':parse_depends, 'desc':parse_desc}
+# helper dict to call the correct function given the file to be parsed
+parsers = {'files':parse_files, 'depends':parse_depends, 'desc':parse_desc}
 
-# pickle and zlib compress lists automatically (for files mainly)
 def adapt_list(L):
+    '''pickle and zlib compress lists automatically'''
     # use a buffer to force a BLOB type in sqlite3
-    return buffer(compress(dumps(L)))
+    return buffer(zlib.compress(cPickle.dumps(L)))
 
 def convert_list(s):
-    return loads(decompress(s))
+    '''pickle and zlib compress lists automatically'''
+    return cPickle.loads(zlib.decompress(s))
 
 # Register the adapter
 sqlite3.register_adapter(list, adapt_list)
@@ -142,121 +156,129 @@ sqlite3.register_converter("list", convert_list)
 # That's why you'll see datetime in the create statement below
 
 def open_db(dbfile):
+    '''open or create the sqlite3 dbfile and the db; check integrity'''
+
     conn = sqlite3.connect(dbfile, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.text_factory = str
     conn.row_factory = sqlite3.Row
     # check the integrity of the db
     try:
-        row = conn.execute('pragma integrity_check').fetchone()
+        row = conn.execute('PRAGMA INTEGRITY_CHECK').fetchone()
     except sqlite3.DatabaseError:
-        print >> stderr, 'Error: %s does not seem to be a sqlite3 db.' % dbfile
-        exit(2)
+        die(2, 'Error: %s does not seem to be a sqlite3 db.' % dbfile)
     if row[0] != 'ok':
-        print >> stderr, 'Error: the db %s is corrupted' % dbfile
-        exit(2)
+        die(2, 'Error: the db %s is corrupted' % dbfile)
 
-    # do not sync to disk. If the OS crashes, the db will be corrupted.
-    conn.execute('pragma synchronous=0')
+    # do not sync to disk. If the OS crashes, the db could be corrupted.
+    conn.execute('PRAGMA SYNCHRONOUS=0')
 
     # create the db if it's not already there
-    conn.execute('''create table if not exists pkg(
-        name        varchar(64),
-        filename    varchar(64),
-        version     varchar(32),
-        desc        varchar(512),
-        url         varchar(256),
-        packager    varchar(128),
-        md5sum      varchar(32),
-        arch        varchar(6),
-        builddate   datetime,
-        installdate datetime,
-        isize       integer,
-        csize       integer,
-        reason      integer,
-        license     list,
-        groups      list,
-        depends     list,
-        optdepends  list,
-        conflicts   list,
-        provides    list,
-        replaces    list,
-        files       list,
-        backup      list,
-        force       integer)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS pkg(
+        name        TEXT,
+        filename    TEXT,
+        version     TEXT,
+        desc        TEXT,
+        url         TEXT,
+        packager    TEXT,
+        md5sum      TEXT,
+        arch        TEXT,
+        builddate   DATETIME,
+        installdate DATETIME,
+        isize       INTEGER,
+        csize       INTEGER,
+        reason      INTEGER,
+        license     LIST,
+        groups      LIST,
+        depends     LIST,
+        optdepends  LIST,
+        conflicts   LIST,
+        provides    LIST,
+        replaces    LIST,
+        files       LIST,
+        backup      LIST,
+        force       INTEGER)''')
 
     cur = conn.cursor()
 
     return (conn, cur)
 
 def commit_pkg(pkg, conn, cur, options):
+    '''add a pkg to the sqlite3 db (or update it if already there)'''
+
     try:
-        row = cur.execute('select rowid from pkg where name=?', (pkg['name'],)).fetchone()
+        row = cur.execute('SELECT rowid FROM pkg WHERE name=?', (pkg['name'],)).fetchone()
         if row is not None:
             if options.verbose:
                 # we could only show the pkgname because convert_tarball pass only
                 # incomplete pkg dict
                 print ':: Updating %s' % pkg['name']
-            cur.execute('update pkg set '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' where name=:name', pkg)
+            cur.execute('UPDATE pkg SET '+','.join('%s=:%s' % (p,p) for p in pkg)+ ' WHERE name=:name', pkg)
         else:
             if options.verbose:
                 # same remark as above
                 print ':: Adding %s' % pkg['name']
-            cur.execute('insert into pkg ('+','.join(p for p in pkg)+') values('+ ','.join(':%s' % p for p in pkg)+')', pkg)
+            cur.execute('INSERT INTO pkg ('+','.join(p for p in pkg)+') VALUES('+ ','.join(':%s' % p for p in pkg)+')', pkg)
         conn.commit()
-    except sqlite3.Error, e:
-        print >> stderr, 'SQLite3 %s' % e
-        exit(1)
+    except sqlite3.Error as e:
+        die(1, 'SQLite3 %s' % e)
 
-def convert_tarball(tf, conn, cur, options):
+def convert_tarball(tarball, conn, cur, options):
+    '''convert a .files.tar.gz to a sqlite3 db'''
+
     # Do not try to create a complete pkg dict
     # but instead commit to db as soon as we have parsed a file
-    for ti in tf:
+    for ti in tarball:
         if ti.isfile():
-            f = tf.extractfile(ti)
-            fname = basename(ti.name)
+            f = tarball.extractfile(ti)
+            fname = os.path.basename(ti.name)
             if fname not in ('desc', 'depends', 'files'):
                 continue
-            pkgdir = basename(dirname(ti.name))
+            pkgdir = os.path.basename(os.path.dirname(ti.name))
             pkgname = '-'.join(pkgdir.split('-')[:-2])
             # use pkgver from pkgdir because some repo do not include desc in their
             # *.files.tar.gz (arch-games for example)
             pkgver = '-'.join(pkgdir.split('-')[-2:])
             pkg = {'name':pkgname, 'version':pkgver}
-            parse_fctn[fname](pkg, f)
+            parsers[fname](pkg, f)
             f.close()
 
             commit_pkg(pkg, conn, cur, options)
 
 def convert_dir(path, conn, cur, options):
-    for pkgdir in sorted(listdir(path)):
+    '''convert a repo dir "pacman style" to a sqlite3 db'''
+
+    for pkgdir in sorted(os.listdir(path)):
         pkgpath = '/'.join((path, pkgdir))
         pkg = {}
 
         for fname in ('desc', 'depends', 'files'):
-            pathfile = join(pkgpath, fname)
-            if exists(pathfile):
+            pathfile = os.path.join(pkgpath, fname)
+            if os.path.exists(pathfile):
                 with open(pathfile) as f:
-                    parse_fctn[fname](pkg, f)
+                    parsers[fname](pkg, f)
 
         commit_pkg(pkg, conn, cur, options)
 
 def update_repo_from_tarball(tf, dbfile, options):
     '''update sqlite db from a repo directory
 This function avoids parsing unnecessary files'''
+
+    # TODO: code that
     pass
 
 def update_repo_from_dir(path, dbfile, options):
     '''update sqlite db from a repo directory
 This function avoids parsing unnecessary files and a lot of I/O'''
+
     conn, cur = open_db(dbfile)
 
     # look for new or changed packages
-    for pkgdir in sorted(listdir(path)):
+    for pkgdir in sorted(os.listdir(path)):
         # get name and version from dir name
         pkgname = '-'.join(pkgdir.split('-')[:-2])
         pkgver = '-'.join(pkgdir.split('-')[-2:])
 
-        oldpkg = cur.execute('select version from pkg where name=?', (pkgname,)).fetchone()
+        oldpkg = cur.execute('SELECT version FROM pkg WHERE name=?', (pkgname,)).fetchone()
         # If not in the db or a different version, include or update it
         update = 0
         if not oldpkg:
@@ -274,26 +296,26 @@ This function avoids parsing unnecessary files and a lot of I/O'''
 
             # parse files again
             for fname in ('desc', 'depends', 'files'):
-                pathfile = join(pkgpath, fname)
-                if exists(pathfile):
+                pathfile = os.path.join(pkgpath, fname)
+                if os.path.exists(pathfile):
                     with open(pathfile) as f:
-                        parse_fctn[fname](pkg, f)
+                        parsers[fname](pkg, f)
 
             commit_pkg(pkg, conn, cur, options)
 
     # check for removed package
-    rows = cur.execute('select name,version from pkg')
+    rows = cur.execute('SELECT name,version FROM pkg')
     pkgs = rows.fetchmany()
 
     while pkgs:
         for pkg in pkgs:
             pkgname, pkgver = pkg
             # look for the directory in the alpm db
-            d = join(path, '%s-%s' %( pkgname, pkgver))
-            if not isdir(d):
+            d = os.path.join(path, '%s-%s' %( pkgname, pkgver))
+            if not os.path.isdir(d):
                 if options.verbose:
                     print ':: Removing %s-%s' % (pkgname, pkgver)
-                cur.execute('delete from pkg where name=?', (pkgname,))
+                cur.execute('DELETE FROM pkg WHERE name=?', (pkgname,))
                 conn.commit()
         pkgs = rows.fetchmany()
 
@@ -301,19 +323,20 @@ This function avoids parsing unnecessary files and a lot of I/O'''
     conn.close()
 
 def convert(path, dbfile, options):
-    '''convert either a repo directory or a *.files.tar.gz to a sqlite3 db'''
+    '''wrapper around convert_dir and convert_tarball'''
+
     tf = None
-    if isfile(path):
+    if os.path.isfile(path):
         try:
-            tf = tfopen(path)
-        except TarError:
-            print >> stderr, 'Error: Unable to open %s' % path
-            return 1
+            tf = tarfile.open(path)
+        except tarfile.TarError as t:
+            print >> sys.stderr, 'Error: Unable to open %s' % path
+            raise t
 
     try:
         conn, cur = open_db(dbfile)
         # clean the db to start from scratch
-        cur.execute('delete from pkg')
+        cur.execute('DELETE FROM pkg')
         conn.commit()
         if tf is not None:
             convert_tarball(tf, conn, cur, options)
@@ -322,31 +345,24 @@ def convert(path, dbfile, options):
 
         cur.close()
         conn.close()
-
-        return 0
-    except sqlite3.OperationalError, e:
-        print >> stderr, 'Error: %s' % e
-        return 1
+    except sqlite3.OperationalError as e:
+        die(1, 'Error: %s' % e)
 
 if __name__ == '__main__':
-    if len(argv) < 2:
+    if len(sys.argv) < 2:
         print '''Usage: %s [directory|somedb.files.tar.gz]
-Convert an alpm directory or a .files.tar.gz file to a sqlite db file''' % argv[0]
-        exit(1)
+Convert an alpm directory or a .files.tar.gz file to a sqlite db file''' % sys.argv[0]
+        sys.exit(1)
 
-    path = argv[1]
-    if isdir(path):
-        dbfile = basename('%s.db' % path.rstrip('/'))
+    path = sys.argv[1]
+    if os.path.isdir(path):
+        dbfile = os.path.basename('%s.db' % path.rstrip('/'))
         print ':: converting %s repo into %s' % (path, dbfile)
-    elif isfile(path):
+    elif os.path.isfile(path):
         if path.endswith('.files.tar.gz'):
             dbfile = path.replace('.files.tar.gz', '.db')
-        elif path.endswith('.tar.gz'):
-            dbfile = path.replace('.tar.gz', '.db')
-        elif path.endswith('.tar.bz2'):
-            dbfile = path.replace('.tar.bz2', '.db')
         else:
             dbfile = path+'.db' # ??
         print ':: converting %s file into %s' % (path, dbfile)
 
-    exit(convert(path, dbfile))
+    sys.exit(convert(path, dbfile))

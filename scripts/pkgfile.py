@@ -26,16 +26,14 @@
 import glob
 import os
 import re
-import signal
 import atexit
-from sys import exit, stderr
-from os.path import exists, join, basename, expanduser
-from optparse import OptionParser, OptionGroup
-from subprocess import Popen, PIPE
-from urllib import urlretrieve
-from alpm2sqlite import convert, open_db, update_repo_from_dir
-
-server = re.compile(r'.*adding new server URL to database \'(.*)\': (.*)')
+import sys
+import os.path
+import optparse
+import subprocess
+import urllib
+import alpm2sqlite
+import tarfile
 
 VERSION = '22'
 CONFIG_DIR = '/etc/pkgtools'
@@ -44,53 +42,59 @@ LOCKFILE = '/var/lock/pkgfile'
 
 def find_dbpath():
     '''find pacman dbpath'''
-    p = Popen(['pacman', '-v'], stdout=PIPE)
+
+    p = subprocess.Popen(['pacman', '-v'], stdout=subprocess.PIPE)
     output = p.communicate()[0]
     for line in output.split('\n'):
         if line.startswith('DB Path'):
             return line.split(':')[1].strip()
 
 def parse_config(filename, comment_char='#', option_char='='):
+    '''basic function to parse a key=value config file'''
     # Borrowed at http://www.decalage.info/en/python/configparser
     # another option is http://mail.python.org/pipermail/python-dev/2002-November/029987.html
+
     options = {}
     try:
-        f = open(filename)
-        for line in f:
-            line = line.strip()
-            if comment_char in line:
-                line, comment = line.split(comment_char, 1)
-            if option_char in line:
-                option, value = line.split(option_char, 1)
-                option = option.strip()
-                value = value.strip('"\' ')
-                try:
-                    options[option] = int(value)
-                except ValueError:
-                    options[option] = value
-        f.close()
+        with open(filename) as f:
+            for line in f:
+                line = line.strip()
+                if comment_char in line:
+                    line, comment = line.split(comment_char, 1)
+                if option_char in line:
+                    option, value = line.split(option_char, 1)
+                    option = option.strip()
+                    value = value.strip('"\' ')
+                    try:
+                        options[option] = int(value)
+                    except ValueError:
+                        options[option] = value
     except IOError:
         pass
     return options
 
 def load_config(conf_file):
-    options = parse_config(join(CONFIG_DIR, conf_file))
+    '''load main config file and try in XDG_CONFIG_HOME too'''
+
+    options = parse_config(os.path.join(CONFIG_DIR, conf_file))
     XDG_CONFIG_HOME = os.getenv('XDG_CONFIG_HOME')
-    xdg_conf_file = join(XDG_CONFIG_HOME, 'pkgtools', conf_file)
-    if exists(xdg_conf_file):
-        tmp = parse_config(xdg_conf_file)
-        for k in tmp:
-            options[k] = expanduser(tmp[k])
-    # NOT IMPLEMENTED: ${HOME}/.pkgtools/pkgfile.conf.
-    # We could say it's depreciated and obsolete
+    if  XDG_CONFIG_HOME is not None:
+        xdg_conf_file = os.path.join(XDG_CONFIG_HOME, 'pkgtools', conf_file)
+        if os.path.exists(xdg_conf_file):
+            tmp = parse_config(xdg_conf_file)
+            for k in tmp:
+                options[k] = os.path.expanduser(tmp[k])
     return options
 
 def die(n=-1, msg='Unknown error'):
-    print >> stderr, msg
-    exit(n)
+    print >> sys.stderr, msg
+    sys.exit(n)
 
+# Locking is usefull ? because sqlite3 can handle 2 process writing in a db file.
+# This only avoid 2 updates at the same time
+# TODO: Look at fcntl.lockf but to lock the db file instead ?
 def lock():
-    if exists(LOCKFILE):
+    if os.path.exists(LOCKFILE):
         die(1, 'Error: Unable to take lock at %s' % LOCKFILE)
     try:
         with open(LOCKFILE, 'w') as f:
@@ -100,67 +104,55 @@ def lock():
 
 def unlock():
     try:
-        if exists(LOCKFILE):
+        if os.path.exists(LOCKFILE):
             os.unlink(LOCKFILE)
     except OSError:
-        print >> stderr, 'Warning: Failed to unlock %s' % LOCKFILE
+        print >> sys.stderr, 'Warning: Failed to unlock %s' % LOCKFILE
 
-def handle_SIGINT(signum, frame):
-    die(1, 'Caught SIGINT. Aborting!')
-
-def handle_SIGTERM(signum, frame):
-    die(1, 'Killed!')
-
-PKG_ATTRS = ('name', 'filename', 'version', 'desc', 'groups', 'url', 'license', 'arch',
-        'builddate', 'installdate', 'packager', 'reason', 'isize', 'csize', 'md5sum',
-        'replaces', 'force', 'depends', 'optdepends', 'conflicts',
-        'provides', 'files', 'backup')
+# used below in print_pkg
+PKG_ATTRS = ('name', 'filename', 'version', 'url', 'license', 'groups', 'provides',
+            'depends', 'optdepends', 'conflicts', 'replaces', 'isize','packager',
+            'arch', 'installdate', 'builddate', 'desc')
 WIDTH = max(len(i) for i in PKG_ATTRS) + 1
 
+# It's ugly but it does the job
 def print_pkg(pkg):
-    s = {}
+    '''pretty print a pkg dict, mimicking pacman -Qi output'''
+
+    # all attributes are not printed
     for p in PKG_ATTRS:
-        ps = p.capitalize().ljust(WIDTH)
+        field = p.capitalize().ljust(WIDTH)
         try:
-            prop = pkg[p]
+            value = pkg[p]
         except KeyError:
             continue
-        if prop is None:
-            s[p] = '%s: --' % ps
+        if value is None:
+            print '%s: --' % field
             continue
         if p == 'csize' or p == 'isize':
-            s[p] = '%s: %d k' % (ps, prop/1024)
+            print '%s: %d k' % (field, value/1024)
         #elif p == 'force':
-        #    s[p] = '%s: %d' % (ps, prop)
+        #    print = '%s: %d' % (field, value)
         elif p in ('groups', 'license', 'replaces',  'depends', 'optdepends', 'conflicts', 'provides'):
-            s[p] = '%s: %s' % (ps, '  '.join(prop))
+            print '%s: %s' % (field, '  '.join(value))
         elif p == 'backup':
-            s[p] = ps+':'
-            for i in prop:
-                s[p] += '\n'+': '.join(i.split('\t')) +'\n'
+            s = field+':'
+            for i in value:
+                s += '\n'+': '.join(i.split('\t')) +'\n'
             else:
-                s[p] += ' --'
+                s += ' --'
+            print s
         #elif p == 'files':
-        #    s[p] = '%s: %s' % (ps, '\n'+'\n'.join(prop))
+        #    print '%s: %s' % (field, '\n'+'\n'.join(value))
         else:
-            s[p] = '%s: %s' % (ps, prop)
-
-    for i in ('name', 'filename', 'version', 'url', 'license', 'groups', 'provides',
-            'depends', 'optdepends', 'conflicts', 'replaces', 'isize','packager',
-            'arch', 'installdate', 'builddate', 'desc'):
-        try:
-            print s[i]
-        except KeyError:
-            pass
+            print '%s: %s' % (field, value)
     print
 
 def update_repo(options, target_repo=None):
-    signal.signal(signal.SIGINT, handle_SIGINT)
-    signal.signal(signal.SIGTERM, handle_SIGTERM)
+    '''download .files.tar.gz for each repo found in pacman config or the one specified and convert them to a sqlite3 db'''
 
-    # check if FILELIST_DIR exists
-    if not exists(FILELIST_DIR):
-        print >> stderr, 'Warning: %s does not exist. Creating it.' % FILELIST_DIR
+    if not os.path.exists(FILELIST_DIR):
+        print >> sys.stderr, 'Warning: %s does not exist. Creating it.' % FILELIST_DIR
         try:
             os.mkdir(FILELIST_DIR, 0755)
         except OSError:
@@ -170,11 +162,12 @@ def update_repo(options, target_repo=None):
     if not os.access(FILELIST_DIR, os.F_OK|os.R_OK|os.W_OK|os.X_OK):
         die(1, 'Error: %s is not accessible' % FILELIST_DIR)
 
-    p = Popen(['pacman', '--debug'], stdout=PIPE)
+    p = subprocess.Popen(['pacman', '--debug'], stdout=subprocess.PIPE)
     output = p.communicate()[0]
 
     # get a list of repo and mirror
     res = []
+    server = re.compile(r'.*adding new server URL to database \'(.*)\': (.*)')
     for line in output.split('\n'):
         m = server.match(line)
         if m:
@@ -190,39 +183,42 @@ def update_repo(options, target_repo=None):
         if repo not in repo_done:
             print ':: Downloading [%s] file list ...' % repo
             repofile = '%s.files.tar.gz' % repo
-            filelist = join(mirror, repofile)
+            filelist = os.path.join(mirror, repofile)
 
             try:
                 if options.verbose:
                     print 'Trying mirror %s ...' % mirror
-                filename, headers = urlretrieve(filelist) # use a temp file
+                filename, headers = urllib.urlretrieve(filelist)
                 # tmp file will be automatically deleted after the process dies
 
                 print ':: Converting [%s] file list ...' % repo
-                ret = convert(filename, '%s/%s.db' % (FILELIST_DIR, repo), options)
-                if ret != 0:
-                    print >> stderr, 'Warning: Unable to convert %s' % filelist
-                    continue
-
-                repo_done.append(repo)
-                print 'Done'
+                # TODO: catch error better
+                try:
+                    # TODO: use update_repo_from_tarball
+                    alpm2sqlite.convert(filename, '%s/%s.db' % (FILELIST_DIR, repo), options)
+                    repo_done.append(repo)
+                    print 'Done'
+                except tarfile.TarError:
+                    # error already printed in convert
+                    pass
             except IOError:
-                print >> stderr, 'Warning: could not retrieve %s' % filelist
+                print >> sys.stderr, 'Warning: could not retrieve %s' % filelist
                 continue
+
+    local_db = os.path.join(FILELIST_DIR, 'local.db')
 
     if target_repo is None or target_repo == 'local':
         print ':: Converting local repo ...'
-        local_db = join(FILELIST_DIR, 'local.db')
-        local_dbpath = join(find_dbpath(), 'local')
-        if exists(local_db):
-            update_repo_from_dir(local_dbpath, local_db, options)
+        local_dbpath = os.path.join(find_dbpath(), 'local')
+        if os.path.exists(local_db):
+            alpm2sqlite.update_repo_from_dir(local_dbpath, local_db, options)
         else:
-            convert(local_dbpath, local_db, options)
+            alpm2sqlite.convert(local_dbpath, local_db, options)
         print 'Done'
 
     # remove left-over db (for example for repo removed from pacman config)
-    repos = glob.glob(join(FILELIST_DIR, '*.db'))
-    registered_repos = set(join(FILELIST_DIR, r[0]+'.db') for r in res)
+    repos = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
+    registered_repos = set(os.path.join(FILELIST_DIR, r[0]+'.db') for r in res)
     registered_repos.add(local_db)
     for r in repos:
         if r not in registered_repos:
@@ -232,44 +228,47 @@ def update_repo(options, target_repo=None):
     unlock()
 
 def check_FILELIST_DIR():
-    if not exists(FILELIST_DIR):
+    '''check if FILELIST_DIR exists and contais any *.db file'''
+
+    if not os.path.exists(FILELIST_DIR):
         die(1, 'Error: %s does not exist. You might want to run "pkgfile -u" first.' % FILELIST_DIR)
-    if len(glob.glob(join(FILELIST_DIR, '*.db'))) ==  0:
+    if len(glob.glob(os.path.join(FILELIST_DIR, '*.db'))) ==  0:
         die(1, 'Error: You need to run "pkgfile -u" first.')
 
 def list_files(s, options):
     '''list files of package matching s'''
+
     check_FILELIST_DIR()
 
     target_repo = ''
     if '/' in s:
         res = s.split('/')
         if len(res) > 2:
-            print >> stderr, 'If given foo/bar, assume "bar" package in "foo" repo'
+            print >> sys.stderr, 'If given foo/bar, assume "bar" package in "foo" repo'
             return
         target_repo, pkg = res
     else:
         pkg = s
 
-    sql_stmt, search = ('select name,files from pkg where name=?' , (pkg,))
+    sql_stmt, search = ('SELECT name,files FROM pkg WHERE name=?' , (pkg,))
     if options.glob:
-        sql_stmt, search = ('select name,files from pkg where name like ?' , (pkg.replace('*', '%').replace('?', '_'),))
+        sql_stmt, search = ('SELECT name,files FROM pkg WHERE name LIKE ?' , (pkg.replace('*', '%').replace('?', '_'),))
 
     res = []
-    local_db = join(FILELIST_DIR, 'local.db')
+    local_db = os.path.join(FILELIST_DIR, 'local.db')
     if options.local:
         repo_list = [local_db]
     else:
-        repo_list = glob.glob(join(FILELIST_DIR, '*.db'))
+        repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
         del repo_list[repo_list.index(local_db)]
 
     foundpkg = False
     for dbfile in repo_list:
-        repo = basename(dbfile).replace('.db', '')
+        repo = os.path.basename(dbfile).replace('.db', '')
         if target_repo != '' and target_repo != repo:
             continue
 
-        conn, cur = open_db(dbfile)
+        conn, cur = alpm2sqlite.open_db(dbfile)
         rows = cur.execute(sql_stmt, search)
         matches = rows.fetchmany()
         while matches != []:
@@ -294,6 +293,7 @@ def list_files(s, options):
 
 def query_pkg(filename, options):
     '''search package with a file matching filename'''
+
     check_FILELIST_DIR()
 
     if options.glob:
@@ -301,8 +301,7 @@ def query_pkg(filename, options):
         regex = translate(filename)
     else:
         if '*' in filename or '?' in filename:
-            print >> stderr, 'Warning: You need to use -g for * and ? wildcards'
-            # TODO: May be we could remove -g and use auto-detection ?
+            print >> sys.stderr, 'Warning: You need to use -g for * and ? wildcards'
         indx = 1 if filename.startswith('/') else 0
         regex = '.*/'+filename[indx:]+'$'
 
@@ -313,17 +312,17 @@ def query_pkg(filename, options):
     except re.error:
         die(1, 'Error: You need -g option to use * and ?')
 
-    local_db = join(FILELIST_DIR, 'local.db')
-    if exists(filename) or options.local:
+    local_db = os.path.join(FILELIST_DIR, 'local.db')
+    if os.path.exists(filename) or options.local:
         repo_list = [local_db]
     else:
-        repo_list = glob.glob(join(FILELIST_DIR, '*.db'))
+        repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
         del repo_list[repo_list.index(local_db)]
 
     for dbfile in repo_list:
-        conn, cur = open_db(dbfile)
-        repo = basename(dbfile).replace('.db', '')
-        rows = cur.execute('select name,version,files from pkg')
+        conn, cur = alpm2sqlite.open_db(dbfile)
+        repo = os.path.basename(dbfile).replace('.db', '')
+        rows = cur.execute('SELECT name,version,files FROM pkg')
 
         pkgfiles = rows.fetchmany()
         # search the package name that have a filename
@@ -342,7 +341,7 @@ def query_pkg(filename, options):
             pkgfiles = rows.fetchmany()
 
         for n, fls in res:
-            pkg = cur.execute('select * from pkg where name=?', (n,)).fetchone()
+            pkg = cur.execute('SELECT * FROM pkg WHERE name=?', (n,)).fetchone()
             print_pkg(pkg)
             if options.verbose:
                 print '\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls) 
@@ -354,9 +353,9 @@ def main():
     global FILELIST_DIR
 
     usage = '%prog [ACTIONS] [OPTIONS] filename'
-    parser = OptionParser(usage=usage, version='%%prog %s' % VERSION)
+    parser = optparse.OptionParser(usage=usage, version='%%prog %s' % VERSION)
     # actions
-    actions = OptionGroup(parser, 'ACTIONS')
+    actions = optparse.OptionGroup(parser, 'ACTIONS')
     actions.add_option('-i', '--info', dest='info', action='store_true',
             default=False, help='provides information about the package owning a file')
     actions.add_option('-l', '--list', dest='list', action='store_true',
@@ -373,7 +372,7 @@ def main():
     parser.add_option('-c', '--case-sensitive', dest='case_sensitive', action='store_true',
             default=False, help='make searches case sensitive')
     parser.add_option('-g', '--glob', dest='glob', action='store_true',
-            default=False, help='allow the use of * and ? as wildcards. You need to escape the string with \' from the shell')
+            default=False, help='allow the use of * and ? as wildcards.')
     parser.add_option('-L', '--local', dest='local', action='store_true',
             default=False, help='search only in the local pacman repository')
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
@@ -381,8 +380,7 @@ def main():
 
     (options, args) = parser.parse_args()
 
-    # This section is here for backward compatibility but there is no need for it
-    # TODO: trash this to the bin with load_config and parse_config
+    # This section is here for backward compatibility
     dict_options = load_config('pkgfile.conf')
     try:
         FILELIST_DIR = dict_options['FILELIST_DIR'].rstrip('/')
@@ -390,11 +388,14 @@ def main():
         pass
     # PKGTOOLS_DIR is meaningless here
     # CONFIG_DIR is useless
-    # RATELIMIT is not used (not implemented because wget is not used)
+    # RATELIMIT is not used yet
+    # options are:
+    #   * use wget
+    #   * make a throttling urlretrieve
+    #   * use urlgrabber
+    #   * use pycurl
     # CMD_SEARCH_ENABLED is not used here
     # UPDATE_CRON neither 
-
-    os.umask(0022) # This will ensure that any files we create are readable by normal users
 
     if options.update:
         try:
@@ -407,18 +408,19 @@ def main():
         except IndexError:
             die(1, 'Error: No target specified to search for !')
     elif options.info or options.search:
-        if options.search and options.info:
-            print >>stderr, 'Warning: -s and -i are exclusive. Defaulting to search'
-            options.info = False
         try:
             query_pkg(args[0], options)
         except IndexError:
             die(1, 'Error: No target specified to search for !')
 
 if __name__ == '__main__':
+    # be sure to remove the lock at exit or in case of exception
     atexit.register(unlock)
+
+    # This will ensure that any files we create are readable by normal users
+    os.umask(0022)
 
     try:
         main()
     except KeyboardInterrupt:
-        print
+        print 'Aborted'
