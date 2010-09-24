@@ -25,6 +25,138 @@ static FILE *open_archive_stream(struct archive *archive) {
   return fopencookie(archive, "r", archive_stream_funcs);
 }
 
+/* from be_files.c in lib/libalpm */
+static int splitname(const char *target, char **pkgname, char **pkgver) {
+  /* the format of a db entry is as follows:
+   *    package-version-rel/
+   * package name can contain hyphens, so parse from the back- go back
+   * two hyphens and we have split the version from the name.
+   */
+  char *tmp, *p, *q;
+
+  if(target == NULL) {
+    return(-1);
+  }
+  tmp = strdup(target);
+  if(tmp == NULL) {
+    return(-1);
+  }
+  p = tmp + strlen(tmp);
+
+  /* do the magic parsing- find the beginning of the version string
+   * by doing two iterations of same loop to lop off two hyphens */
+  for(q = --p; *q && *q != '-'; q--);
+  for(p = --q; *p && *p != '-'; p--);
+  if(*p != '-' || p == tmp) {
+    return(-1);
+  }
+
+  *pkgver = strdup(p+1);
+  /* insert a terminator at the end of the name (on hyphen)- then copy it */
+  *p = '\0';
+  *pkgname = tmp;
+
+  return 0;
+}
+
+static PyObject *list_files(const char *filename,
+    int (*match_func)(const char *dbfile, void *data),
+    void *data) {
+  struct archive *a;
+  struct archive_entry *entry;
+  struct stat st;
+  char pname[ABUFLEN], *fname, *dname, *pkgname, *pkgver;
+  char *l = NULL;
+  FILE *stream = NULL;
+  size_t n = 0;
+  int nread;
+  PyObject *ret, *pystr;
+
+  pname[ABUFLEN-1]='\0';
+  if(stat(filename, &st)==-1 || !S_ISREG(st.st_mode)) {
+    PyErr_Format(PyExc_RuntimeError, "File does not exist: %s\n", filename);
+    return NULL;
+  }
+
+  a = archive_read_new();
+  archive_read_support_compression_all(a);
+  archive_read_support_format_all(a);
+  archive_read_open_filename(a, filename, 10240);
+  while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+    if(!S_ISREG(archive_entry_filetype(entry))) {
+      archive_read_data_skip(a);
+      continue;
+    }
+    strncpy(pname, archive_entry_pathname(entry), ABUFLEN-1);
+    fname = basename(pname);
+    dname = dirname(pname);
+
+    splitname(dname, &pkgname, &pkgver);
+    if (pkgname == NULL || pkgver == NULL) {
+      archive_read_finish(a);
+      return NULL;
+    }
+
+    if(!match_func(pkgname, data)) {
+      free(pkgname);
+      free(pkgver);
+      archive_read_data_skip(a);
+      continue;
+    }
+    free(pkgname);
+    free(pkgver);
+
+    if(strcmp(fname, "files")) {
+      archive_read_data_skip(a);
+      continue;
+    }
+
+    stream = open_archive_stream(a);
+    if (!stream) {
+      PyErr_SetString(PyExc_RuntimeError, "Unable to open archive stream.");
+      archive_read_finish(a);
+      return NULL;
+    }
+
+    ret = PyList_New(0);
+    if(ret == NULL) {
+      archive_read_finish(a);
+      return NULL;
+    }
+
+    l = NULL;
+    while((nread = getline(&l, &n, stream)) != -1) {
+      /* Note: getline returns -1 on both EOF and error. */
+      /* So I'm assuming that nread > 0. */
+      if(l[nread - 1] == '\n')
+        l[nread - 1] = '\0';	/* Clobber trailing newline. */
+      if(strcmp(l, "%FILES%")) {
+        pystr = PyString_FromString(l);
+        if(pystr == NULL)
+          goto cleanup;
+        PyList_Append(ret, pystr);
+        Py_DECREF(pystr);
+      }
+    }
+    fclose(stream);
+    /* We're done: found our matching package and get all its files */
+    break;
+  }
+
+  if(l)
+    free(l);
+
+  archive_read_finish(a);
+  return ret;
+
+cleanup:
+  if(l)
+    free(l);
+  archive_read_finish(a);
+  Py_DECREF(ret);
+  return NULL;
+}
+
 static PyObject *search_file(const char *filename,
     int (*match_func)(const char *dbfile, void *data),
     void *data) {
@@ -71,7 +203,7 @@ static PyObject *search_file(const char *filename,
       archive_read_data_skip(a);
       continue;
     }
-    
+
     stream = open_archive_stream(a);
     if (!stream) {
       PyErr_SetString(PyExc_RuntimeError, "Unable to open archive stream.");
@@ -152,6 +284,10 @@ static int simple_match(const char *f, void *d) {
   return 0;
 }
 
+static int str_match(const char *f, void *d) {
+	return !strcmp(f, (const char *)d);
+}
+
 static PyObject *search(PyObject *self, PyObject *args) {
   char *filename, *pattern;
 
@@ -162,6 +298,18 @@ static PyObject *search(PyObject *self, PyObject *args) {
     return NULL;
   }
   return search_file(filename, &simple_match, (void*)pattern);
+}
+
+static PyObject *list(PyObject *self, PyObject *args) {
+  char *filename, *pattern;
+
+  if(!PyArg_ParseTuple(args, "ss", &filename, &pattern))
+    return NULL;
+  if(pattern == NULL || strlen(pattern)<=0) {
+    PyErr_SetString(PyExc_RuntimeError, "Empty pattern given");
+    return NULL;
+  }
+  return list_files(filename, &str_match, (void*)pattern);
 }
 
 static int shell_match(const char *f, void *d) {
@@ -250,6 +398,7 @@ static PyObject *search_pcre(PyObject *self, PyObject *args) {
 }
 
 static PyMethodDef PkgfileMethods[] = {
+  { "list", (PyCFunction)&list, METH_VARARGS, "List the files of a given package in a file list tarball." },
   { "search", (PyCFunction)&search, METH_VARARGS, "Search for a filename or pathname in a file list tarball." },
   { "search_shell", (PyCFunction)&search_shell, METH_VARARGS, "Search for a filename in a file list tarball using shell pattern matching." },
   { "search_regex", (PyCFunction)&search_regex, METH_VARARGS, "Search for a pathname in a file list tarball using glibc regular expressions." },
