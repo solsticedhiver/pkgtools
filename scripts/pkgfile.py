@@ -23,23 +23,21 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 ##
 
+import re
 import glob
 import os
-import re
 import atexit
 import sys
 import optparse
 import subprocess
 import urllib2
-import alpm2sqlite
 import tarfile
 import time
-import cStringIO
+import pkgfile
 
 VERSION = '22'
 CONFIG_DIR = '/etc/pkgtools'
 FILELIST_DIR = '/var/cache/pkgtools/lists'
-LOCKFILE = '/var/lock/pkgfile'
 
 def find_dbpath():
     '''find pacman dbpath'''
@@ -91,32 +89,12 @@ def die(n=-1, msg='Unknown error'):
     print >> sys.stderr, msg
     sys.exit(n)
 
-# Locking is usefull ? because sqlite3 can handle 2 process writing in a db file.
-# This only avoid 2 updates at the same time
-# TODO: Look at fcntl.lockf but to lock the db file instead ?
-def lock():
-    if os.path.exists(LOCKFILE):
-        die(1, 'Error: Unable to take lock at %s' % LOCKFILE)
-    try:
-        with open(LOCKFILE, 'w') as f:
-            f.write('%d' % os.getpid())
-    except IOError:
-        die(1, 'Error: Unable to take lock at %s' % LOCKFILE)
-
-def unlock():
-    try:
-        if os.path.exists(LOCKFILE):
-            os.unlink(LOCKFILE)
-    except OSError:
-        print >> sys.stderr, 'Warning: Failed to unlock %s' % LOCKFILE
-
 # used below in print_pkg
 PKG_ATTRS = ('name', 'filename', 'version', 'url', 'license', 'groups', 'provides',
             'depends', 'optdepends', 'conflicts', 'replaces', 'isize','packager',
             'arch', 'installdate', 'builddate', 'desc')
 WIDTH = max(len(i) for i in PKG_ATTRS) + 1
 
-# It's ugly but it does the job
 def print_pkg(pkg):
     '''pretty print a pkg dict, mimicking pacman -Qi output'''
 
@@ -150,7 +128,7 @@ def print_pkg(pkg):
     print
 
 def update_repo(options, target_repo=None):
-    '''download .files.tar.gz for each repo found in pacman config or the one specified and convert them to a sqlite3 db'''
+    '''download .files.tar.gz for each repo found in pacman config or the one specified'''
 
     if not os.path.exists(FILELIST_DIR):
         print >> sys.stderr, 'Warning: %s does not exist. Creating it.' % FILELIST_DIR
@@ -174,9 +152,6 @@ def update_repo(options, target_repo=None):
         if m:
             res.append((m.group(1), m.group(2)))
 
-    # ok. so here we go
-    lock()
-
     repo_done = []
     for repo, mirror in res:
         if target_repo is not None and repo != target_repo:
@@ -189,7 +164,7 @@ def update_repo(options, target_repo=None):
             try:
                 if options.verbose:
                     print 'Trying mirror %s ...' % mirror
-                dbfile = '%s/%s.db' % (FILELIST_DIR, repo)
+                dbfile = '%s/%s.files.tar.gz' % (FILELIST_DIR, repo)
                 try:
                     # try to get mtime of dbfile
                     local_mtime = os.path.getmtime(dbfile)
@@ -206,60 +181,49 @@ def update_repo(options, target_repo=None):
                     update = remote_mtime > local_mtime
                 if update:
                     print ':: Downloading %s ...' % fileslist
-                    # Saving data to tmp file
-                    tmp = cStringIO.StringIO(conn.read())
+                    # Saving data to local file
+                    f = open(dbfile, 'w')
+                    f.write(conn.read())
+                    f.close()
                     conn.close()
-
-                    print ':: Converting [%s] file list ...' % repo
-                    # TODO: catch error better
-                    try:
-                        alpm2sqlite.convert(tmp, dbfile, options.verbose)
-                        tmp.close()
-                        repo_done.append(repo)
-                        print 'Done'
-                        # touch the dbfile with mtime of the fileslist we just retrieved
-                        os.utime(dbfile, (remote_mtime, remote_mtime))
-                    except tarfile.TarError:
-                        # error already printed in convert
-                        pass
                 else:
                     print 'No update available'
                     conn.close()
-                    repo_done.append(repo)
+                repo_done.append(repo)
             except IOError:
                 print >> sys.stderr, 'Warning: could not retrieve %s' % fileslist
                 continue
 
-    local_db = os.path.join(FILELIST_DIR, 'local.db')
+    local_db = os.path.join(FILELIST_DIR, 'local.files.tar.gz')
 
     if target_repo is None or target_repo == 'local':
         print ':: Converting local repo ...'
         local_dbpath = os.path.join(find_dbpath(), 'local')
-        alpm2sqlite.convert(local_dbpath, local_db, options)
+        # create a tarball of local repo
+        tf = tarfile.open(local_db, 'w:gz')
+        cwd = os.getcwd() # save current working directory
+        os.chdir(local_dbpath)
+        tf.add('.')
+        tf.close()
+        os.chdir(cwd) # restore it
         print 'Done'
 
     # remove left-over db (for example for repo removed from pacman config)
-    repos = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
-    registered_repos = set(os.path.join(FILELIST_DIR, r[0]+'.db') for r in res)
+    repos = glob.glob(os.path.join(FILELIST_DIR, '*.files.tar.gz'))
+    registered_repos = set(os.path.join(FILELIST_DIR, r[0]+'.files.tar.gz') for r in res)
     registered_repos.add(local_db)
     for r in repos:
         if r not in registered_repos:
             print ':: Deleting %s' % r
             os.unlink(r)
 
-    unlock()
-
 def check_FILELIST_DIR():
-    '''check if FILELIST_DIR exists and contais any *.db file'''
+    '''check if FILELIST_DIR exists and contais any *.files.tar.gz file'''
 
     if not os.path.exists(FILELIST_DIR):
         die(1, 'Error: %s does not exist. You might want to run "pkgfile -u" first.' % FILELIST_DIR)
-    if len(glob.glob(os.path.join(FILELIST_DIR, '*.db'))) ==  0:
+    if len(glob.glob(os.path.join(FILELIST_DIR, '*.files.tar.gz'))) ==  0:
         die(1, 'Error: You need to run "pkgfile -u" first.')
-
-def regex_search(expr, s):
-    regex = re.compile(expr)
-    return regex.match(s) is not None
 
 def list_files(s, options):
     '''list files of package matching s'''
@@ -276,44 +240,34 @@ def list_files(s, options):
     else:
         pkg = s
 
-    sql_stmt, search = ('SELECT name,files FROM pkg WHERE name=?' , (pkg,))
-    if options.glob:
-        sql_stmt, search = ('SELECT name,files FROM pkg WHERE name LIKE ?' , (pkg.replace('*', '%').replace('?', '_'),))
-    elif options.regex:
-        sql_stmt, search = ('SELECT name,files FROM pkg WHERE name REGEXP ?' , (pkg,))
-
     res = []
-    local_db = os.path.join(FILELIST_DIR, 'local.db')
+    local_db = os.path.join(FILELIST_DIR, 'local.files.tar.gz')
     if options.local:
         repo_list = [local_db]
     else:
-        repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
+        repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.files.tar.gz'))
         del repo_list[repo_list.index(local_db)]
 
     foundpkg = False
     for dbfile in repo_list:
-        repo = os.path.basename(dbfile).replace('.db', '')
+        repo = os.path.basename(dbfile).replace('.files.tar.gz', '')
         if target_repo != '' and target_repo != repo:
             continue
 
-        conn, cur = alpm2sqlite.open_db(dbfile)
         if options.regex:
-            conn.create_function('REGEXP', 2, regex_search)
-        rows = cur.execute(sql_stmt, search)
-        matches = rows.fetchmany()
-        while matches != []:
-            foundpkg = True
-            for pkg, files in matches:
-                for f in sorted(files):
-                    if options.binaries:
-                        if '/sbin/' in f or '/bin/' in f:
-                            print '%s /%s' % (pkg, f)
-                    else:
-                        print '%s /%s' % (pkg, f)
-            matches = rows.fetchmany()
+            matches = pkgfile.list_regex(dbfile, s)
+        else:
+            matches = pkgfile.list(dbfile, s)
 
-        cur.close()
-        conn.close()
+        for m in sorted(matches):
+            for f in m['files']:
+                if options.binaries:
+                    if '/sbin/' in f or '/bin/' in f:
+                        print '%s /%s' % (m['name'], f)
+                        foundpkg = True
+                else:
+                    print '%s /%s' % (m['name'], f)
+                    foundpkg = True
 
     if not foundpkg:
         print 'Package "%s" not found' % pkg,
@@ -327,59 +281,45 @@ def query_pkg(filename, options):
     check_FILELIST_DIR()
 
     if options.glob:
-        from fnmatch import translate
-        regex = translate(filename)
+        func = pkgfile.search_shell
     elif options.regex:
-        regex = filename
+        func = pkgfile.search_regex
     else:
-        indx = 1 if filename.startswith('/') else 0
-        regex = '.*/' + re.escape(filename[indx:]) + '$'
+        func = pkgfile.search
 
-    flags = 0 if options.case_sensitive else re.IGNORECASE
-
-    try:
-        filematch = re.compile(regex, flags)
-    except re.error as e:
-        die(1, 'Regex Error: %s' % e)
-
-    local_db = os.path.join(FILELIST_DIR, 'local.db')
+    local_db = os.path.join(FILELIST_DIR, 'local.files.tar.gz')
     if os.path.exists(filename) or options.local:
         repo_list = [local_db]
     else:
-        repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.db'))
+        repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.files.tar.gz'))
         del repo_list[repo_list.index(local_db)]
 
     for dbfile in repo_list:
-        conn, cur = alpm2sqlite.open_db(dbfile)
-        repo = os.path.basename(dbfile).replace('.db', '')
-        rows = cur.execute('SELECT name,version,files FROM pkg')
+        pkgfiles = func(dbfile, filename)
+        repo = os.path.basename(dbfile).replace('.files.tar.gz', '')
 
-        pkgfiles = rows.fetchmany()
         # search the package name that have a filename
         res = []
-        while pkgfiles != []:
-            for n, v, fls in pkgfiles:
-                matches = [f for f in sorted(fls) if filematch.match('/'+f)]
-                if options.binaries:
-                    matches = [f for f in matches if '/sbin/' in f or '/bin/' in f]
-                if matches != []:
-                    if options.info:
-                        res.append((n, matches))
+        for p in pkgfiles:
+            matches = p['files']
+            if options.binaries:
+                matches = [f for f in p['files'] if '/sbin/' in f or '/bin/' in f]
+            if matches != []:
+                pkgname = '-'.join(p['package'].split('-')[:-2])
+                pkgver = '-'.join(p['package'].split('-')[-2:])
+                if options.info:
+                    res.append((pkgname, matches))
+                else:
+                    if options.verbose:
+                        print '\n'.join('%s/%s (%s) : /%s' % (repo, pkgname, pkgver, f) for f in matches)
                     else:
-                        if options.verbose:
-                            print '\n'.join('%s/%s (%s) : /%s' % (repo, n, v, f) for f in matches)
-                        else:
-                            print '%s/%s' % (repo, n)
-            pkgfiles = rows.fetchmany()
+                        print '%s/%s' % (repo, pkgname)
 
         for n, fls in res:
-            pkg = cur.execute('SELECT * FROM pkg WHERE name=?', (n,)).fetchone()
-            print_pkg(pkg)
+            print "=== detailed info about pkg here ==="
             if options.verbose:
                 print '\n'.join('%s/%s : /%s' % (repo, n, f) for f in fls) 
                 print
-        cur.close()
-        conn.close()
 
 def main():
     global FILELIST_DIR
@@ -451,9 +391,6 @@ def main():
             die(1, 'Error: No target specified to search for !')
 
 if __name__ == '__main__':
-    # be sure to remove the lock at exit or in case of exception
-    atexit.register(unlock)
-
     # This will ensure that any files we create are readable by normal users
     os.umask(0022)
 
