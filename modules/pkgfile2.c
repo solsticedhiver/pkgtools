@@ -363,6 +363,22 @@ struct my_pcredata {
   pcre_extra *re_extra;
 };
 
+static PyObject *list_regex(PyObject *self, PyObject *args) {
+  regex_t re;
+  char *filename, *pattern;
+  PyObject *ret;
+
+  if(!PyArg_ParseTuple(args, "ss", &filename, &pattern))
+    return NULL;
+  if(regcomp(&re, pattern, REG_EXTENDED|REG_NOSUB) != 0) {
+    PyErr_SetString(PyExc_RuntimeError, "Could not compile regex.");
+    return NULL;
+  }
+  ret = list_files(filename, &regex_match, (void *)&re);
+  regfree(&re);
+  return ret;
+}
+
 static int pcre_match(const char *f, void *d) {
   if(f==NULL || strlen(f)<=0)
     return 0;
@@ -399,6 +415,7 @@ static PyObject *search_pcre(PyObject *self, PyObject *args) {
 
 static PyMethodDef PkgfileMethods[] = {
   { "list", (PyCFunction)&list, METH_VARARGS, "List the files of a given package in a file list tarball." },
+  { "list_regex", (PyCFunction)&list_regex, METH_VARARGS, "List the files of a given package matching a regex in a file list tarball." },
   { "search", (PyCFunction)&search, METH_VARARGS, "Search for a filename or pathname in a file list tarball." },
   { "search_shell", (PyCFunction)&search_shell, METH_VARARGS, "Search for a filename in a file list tarball using shell pattern matching." },
   { "search_regex", (PyCFunction)&search_regex, METH_VARARGS, "Search for a pathname in a file list tarball using glibc regular expressions." },
