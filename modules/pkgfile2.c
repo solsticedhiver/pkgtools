@@ -132,6 +132,10 @@ cleanup_nodict:
   return NULL;
 }
 
+static int str_match(const char *f, void *d) {
+	return !strcmp(f, (const char *)d);
+}
+
 static PyObject *list_files(const char *filename,
     int (*match_func)(const char *, void *),
     void *data) {
@@ -143,11 +147,16 @@ static PyObject *list_files(const char *filename,
   FILE *stream = NULL;
   size_t n = 0;
   int nread;
-  PyObject *ret, *pystr;
+  PyObject *ret, *pystr, *files, *dict;
 
   pname[ABUFLEN-1]='\0';
   if(stat(filename, &st)==-1 || !S_ISREG(st.st_mode)) {
     PyErr_Format(PyExc_RuntimeError, "File does not exist: %s\n", filename);
+    return NULL;
+  }
+
+  ret = PyList_New(0);
+  if(ret == NULL) {
     return NULL;
   }
 
@@ -176,10 +185,10 @@ static PyObject *list_files(const char *filename,
       archive_read_data_skip(a);
       continue;
     }
-    free(pkgname);
-    free(pkgver);
 
     if(strcmp(fname, "files")) {
+      free(pkgname);
+      free(pkgver);
       archive_read_data_skip(a);
       continue;
     }
@@ -191,11 +200,9 @@ static PyObject *list_files(const char *filename,
       return NULL;
     }
 
-    ret = PyList_New(0);
-    if(ret == NULL) {
-      archive_read_finish(a);
-      return NULL;
-    }
+    files = PyList_New(0);
+    if(files == NULL)
+      goto cleanup;
 
     l = NULL;
     while((nread = getline(&l, &n, stream)) != -1) {
@@ -206,14 +213,40 @@ static PyObject *list_files(const char *filename,
       if(strcmp(l, "%FILES%")) {
         pystr = PyString_FromString(l);
         if(pystr == NULL)
-          goto cleanup;
-        PyList_Append(ret, pystr);
+          goto cleanup_files;
+        PyList_Append(files, pystr);
         Py_DECREF(pystr);
       }
     }
     fclose(stream);
-    /* We're done: found our matching package and get all its files */
-    break;
+
+    dict = PyDict_New();
+    if(dict == NULL)
+      goto cleanup_files;
+    PyDict_SetItemString(dict, "files", files);
+    Py_DECREF(files);
+
+    pystr = PyString_FromString(pkgname);
+    if(pystr == NULL)
+      goto cleanup_dict;
+    PyDict_SetItemString(dict, "name", pystr);
+    Py_DECREF(pystr);
+
+    pystr = PyString_FromString(pkgver);
+    if(pystr == NULL)
+      goto cleanup_dict;
+    PyDict_SetItemString(dict, "version", pystr);
+    Py_DECREF(pystr);
+
+    PyList_Append(ret, dict);
+    Py_DECREF(dict);
+
+    free(pkgname);
+    free(pkgver);
+
+    if(match_func == &str_match)
+      /* We're done: found our matching package and get all its files */
+      break;
   }
 
   if(l)
@@ -222,6 +255,10 @@ static PyObject *list_files(const char *filename,
   archive_read_finish(a);
   return ret;
 
+cleanup_dict:
+  Py_DECREF(dict);
+cleanup_files:
+  Py_DECREF(files);
 cleanup:
   if(l)
     free(l);
@@ -355,10 +392,6 @@ static int simple_match(const char *f, void *d) {
   if(mb != NULL && !strcmp(mb+1,m))
     return 1;
   return 0;
-}
-
-static int str_match(const char *f, void *d) {
-	return !strcmp(f, (const char *)d);
 }
 
 static PyObject *search(PyObject *self, PyObject *args) {
