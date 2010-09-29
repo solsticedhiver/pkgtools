@@ -59,6 +59,79 @@ static int splitname(const char *target, char **pkgname, char **pkgver) {
   return 0;
 }
 
+static PyObject *list_package(PyObject *self, PyObject *args) {
+  struct archive *a;
+  struct archive_entry *entry;
+  struct stat st;
+  char pname[ABUFLEN], *pkgname, *pkgver, *filename;
+  PyObject *ret, *dict, *pystr;
+
+  if(!PyArg_ParseTuple(args, "s", &filename))
+    return NULL;
+
+  pname[ABUFLEN-1]='\0';
+  if(stat(filename, &st)==-1 || !S_ISREG(st.st_mode)) {
+    PyErr_Format(PyExc_RuntimeError, "File does not exist: %s\n", filename);
+    return NULL;
+  }
+
+  ret = PyList_New(0);
+  if(ret == NULL) {
+    return NULL;
+  }
+
+  a = archive_read_new();
+  archive_read_support_compression_all(a);
+  archive_read_support_format_all(a);
+  archive_read_open_filename(a, filename, 10240);
+  while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+    if(!S_ISDIR(archive_entry_filetype(entry))) {
+      archive_read_data_skip(a);
+      continue;
+    }
+    strncpy(pname, archive_entry_pathname(entry), ABUFLEN-1);
+
+    /* get rid of the trailing / */
+    pname[strlen(pname)-1] = '\0';
+    splitname(pname, &pkgname, &pkgver);
+    if (pkgname == NULL || pkgver == NULL) {
+      archive_read_finish(a);
+      return NULL;
+    }
+
+    dict = PyDict_New();
+    if(dict == NULL)
+      goto cleanup_nodict;
+
+    pystr = PyString_FromString(pkgname);
+		free(pkgname);
+    if(pystr == NULL)
+      goto cleanup;
+    PyDict_SetItemString(dict, "name", pystr);
+    Py_DECREF(pystr);
+
+    pystr = PyString_FromString(pkgver);
+		free(pkgver);
+    if(pystr == NULL)
+      goto cleanup;
+    PyDict_SetItemString(dict, "version", pystr);
+    Py_DECREF(pystr);
+
+    PyList_Append(ret, dict);
+    Py_DECREF(dict);
+  }
+
+  archive_read_finish(a);
+  return ret;
+
+cleanup:
+  Py_DECREF(dict);
+cleanup_nodict:
+  archive_read_finish(a);
+  Py_DECREF(ret);
+  return NULL;
+}
+
 static PyObject *list_files(const char *filename,
     int (*match_func)(const char *, void *),
     void *data) {
@@ -416,6 +489,7 @@ static PyObject *search_pcre(PyObject *self, PyObject *args) {
 static PyMethodDef PkgfileMethods[] = {
   { "list", (PyCFunction)&list, METH_VARARGS, "List the files of a given package in a file list tarball." },
   { "list_regex", (PyCFunction)&list_regex, METH_VARARGS, "List the files of a given package matching a regex in a file list tarball." },
+  { "list_package", (PyCFunction)&list_package, METH_VARARGS, "List the packages of a file list tarball." },
   { "search", (PyCFunction)&search, METH_VARARGS, "Search for a filename or pathname in a file list tarball." },
   { "search_shell", (PyCFunction)&search_shell, METH_VARARGS, "Search for a filename in a file list tarball using shell pattern matching." },
   { "search_regex", (PyCFunction)&search_regex, METH_VARARGS, "Search for a pathname in a file list tarball using glibc regular expressions." },
