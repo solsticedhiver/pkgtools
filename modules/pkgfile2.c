@@ -60,7 +60,7 @@ static int splitname(const char *target, char **pkgname, char **pkgver) {
 }
 
 static PyObject *list_files(const char *filename,
-    int (*match_func)(const char *dbfile, void *data),
+    int (*match_func)(const char *, void *),
     void *data) {
   struct archive *a;
   struct archive_entry *entry;
@@ -158,7 +158,7 @@ cleanup:
 }
 
 static PyObject *search_file(const char *filename,
-    int (*match_func)(const char *dbfile, void *data),
+    int (*match_func)(const char *, void *),
     void *data) {
   struct archive *a;
   struct archive_entry *entry;
