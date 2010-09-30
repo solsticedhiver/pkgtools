@@ -179,7 +179,8 @@ def update_repo(options, target_repo=None):
                 else:
                     remote_mtime = time.mktime(last_modified)
                     update = remote_mtime > local_mtime
-                if update:
+
+                if update or options.update > 1:
                     print ':: Downloading %s ...' % fileslist
                     # Saving data to local file
                     f = open(dbfile, 'w')
@@ -334,8 +335,8 @@ def main():
             default=False, help='list files of a given package; similar to "pacman -Ql"')
     actions.add_option('-s', '--search', dest='search', action='store_true',
             default=True, help='search which package owns a file')
-    actions.add_option('-u', '--update', dest='update', action='store_true',
-            default=False, help='update to the latest filelist. This requires write permission to %s' % FILELIST_DIR)
+    actions.add_option('-u', '--update', dest='update', action='count',
+            default=0, help='update to the latest filelist. This requires write permission to %s' % FILELIST_DIR)
     parser.add_option_group(actions)
 
     # options
