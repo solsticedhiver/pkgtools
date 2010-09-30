@@ -231,7 +231,7 @@ def list_files(s, options):
 
     check_FILELIST_DIR()
 
-    target_repo = ''
+    target_repo = options.repo
     if '/' in s:
         res = s.split('/')
         if len(res) > 2:
@@ -243,8 +243,11 @@ def list_files(s, options):
 
     res = []
     local_db = os.path.join(FILELIST_DIR, 'local.files.tar.gz')
-    if options.local:
-        repo_list = [local_db]
+    if target_repo:
+        tmp = os.path.join(FILELIST_DIR, '%s.files.tar.gz' % target_repo)
+        if not os.path.exists(tmp):
+            die(1, 'Error: %s repo does not exist' % target_repo)
+        repo_list = [tmp]
     else:
         repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.files.tar.gz'))
         del repo_list[repo_list.index(local_db)]
@@ -252,8 +255,6 @@ def list_files(s, options):
     foundpkg = False
     for dbfile in repo_list:
         repo = os.path.basename(dbfile).replace('.files.tar.gz', '')
-        if target_repo != '' and target_repo != repo:
-            continue
 
         if options.regex:
             matches = pkgfile.list_regex(dbfile, s)
@@ -273,7 +274,7 @@ def list_files(s, options):
     if not foundpkg:
         print 'Package "%s" not found' % pkg,
         if target_repo != '':
-            print ' in repo %s' % target_repo,
+            print ' in [%s] repo ' % target_repo,
         print
 
 def query_pkg(filename, options):
@@ -288,9 +289,15 @@ def query_pkg(filename, options):
     else:
         func = pkgfile.search
 
+    target_repo = options.repo
     local_db = os.path.join(FILELIST_DIR, 'local.files.tar.gz')
-    if os.path.exists(filename) or options.local:
+    if os.path.exists(filename) or target_repo == 'local':
         repo_list = [local_db]
+    elif target_repo:
+        tmp = os.path.join(FILELIST_DIR, '%s.files.tar.gz' % target_repo)
+        if not os.path.exists(tmp):
+            die(1, 'Error: %s repo does not exist' % target_repo)
+        repo_list = [tmp]
     else:
         repo_list = glob.glob(os.path.join(FILELIST_DIR, '*.files.tar.gz'))
         del repo_list[repo_list.index(local_db)]
@@ -348,8 +355,8 @@ def main():
             default=False, help='allow the use of * and ? as wildcards.')
     parser.add_option('-r', '--regex', dest='regex', action='store_true',
             default=False, help='allow the use of regex in searches')
-    parser.add_option('-L', '--local', dest='local', action='store_true',
-            default=False, help='search only in the local pacman repository')
+    parser.add_option('-R', '--repo', dest='repo', action='store',
+            default='', help='search only in the specified repository')
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
             default=False, help='enable verbose output')
 
